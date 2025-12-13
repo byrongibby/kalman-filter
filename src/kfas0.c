@@ -57,6 +57,8 @@ static int epssmooth(
   double *e = malloc(q * m * sizeof(double));
   double *f = malloc(q * m * sizeof(double));
   double g;
+  double h;
+  double j;
 
   // Create mxm identity matrix
   double *Ident = calloc(m * m, sizeof(double));
@@ -141,7 +143,7 @@ static int epssmooth(
 
   // Initialise epshat = v, and Veps = F
   memcpy(epshat, v, n * p * sizeof(double));
-  memcpy(Veps, F, n * p * sizeof(double));
+  memcpy(Veps, Finv, n * p * sizeof(double));
 
   // Smooth
   for (int t = n - 1; t >= 0; t--) {
@@ -182,20 +184,23 @@ static int epssmooth(
     for (int i = p - 1; i >= 0; i--) {
       // Smoothed epsilon disturbances
       g = H[(i * p) + i] * Finv[(t * p) + i];
+      h = neg * F[(t * p) + i];
+      j = pos * F[(t * p) + i];
       F77_CALL(dgemv)(
         tr, &m, &inc,
         &neg, K + (t * m * p) + (i * m), &m, r + (t * m), &inc,
-        &pos, epshat + (t * p) + i, &inc, len_1);
-      F77_CALL(dgemm)(
-        tr, nt, &inc, &m, &m,
-        &pos, K + (t * m * p) + (i * m), &m, N + (t * m * m), &m,
-        &zero, b, &m, len_1, len_2);
-      F77_CALL(dgemm)(
-        tr, nt, &inc, &inc, &m,
-        &pos, b, &m, K + (t * m * p) + (i * m), &m,
-        &pos, Veps + (t * p) + i, &inc, len_1, len_2);
-      epshat[(t * p) + i] *= g;
-      Veps[(t * p) + i] *= g * g;
+        Finv + (t * p) + i, epshat + (t * p) + i, &inc, len_1);
+      epshat[(t * p) + i] *= H[(i * p) + i];
+      F77_CALL(dgemv)(
+        nt, &m, &m,
+        &pos, N + (t * m * m), &m, K + (t * m * p) + (i * m), &inc,
+        &zero, b, &inc, len_1);
+      F77_CALL(dgemv)(
+        tr, &m, &inc,
+        &pos, K + (t * m * p) + (i * m), &m, b, &inc,
+        &pos, Veps + (t * p) + i, &inc, len_1);
+      Veps[(t * p) + i] *= H[(i * p) + i] * H[(i * p) + i];
+      Veps[(t * p) + i] = H[(i * p) + i] - Veps[(t * p) + i];
 
       // L matrix
       memcpy(L, Ident, m * m * sizeof(double));

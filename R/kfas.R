@@ -27,13 +27,15 @@ kfas <- function(
   m <- nrow(vartrans)
   q <- ncol(vartrans)
 
+  F <- as.vector(t(matrix(kfas[[2]], p * n, m)))
+
   result$v <- t(kfas[[1]])
   result$F <- array(kfas[[2]], c(p, n))
   result$att <- t(kfas[[3]])
   result$Ptt <-  array(kfas[[4]], c(m, m, n))
   result$a <- t(kfas[[5]])
   result$P <-  array(kfas[[6]], c(m, m, n + 1))
-  result$K <-  array(kfas[[7]], c(m, p, n))
+  result$K <-  array(kfas[[7]] * F, c(m, p, n))
   result$r <- t(kfas[[8]])
   result$N <-  array(kfas[[9]], c(m, m, n + 1))
   result$epshat <- t(kfas[[10]])
