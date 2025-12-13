@@ -1,0 +1,9 @@
+Package: kfilter
+Title: Kalman Filter and Smoother 
+Version: 1.0.0
+Date: 2025-10-30
+Authors@R: c(person(given = "Byron", family = "Botha", role = c("aut", "cre"), email = "byron@codera.co.za"))
+Description: Codera Analytic's Core Model.
+Depends: R (>= 4.2.0)
+URL: https://github.com/coderaanalytics-models/core
+BugReports: https://github.com/coderaanalytics-models/core/issues
