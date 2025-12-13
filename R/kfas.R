@@ -39,9 +39,9 @@ kfas <- function(
   result$r <- t(kfas[[8]])
   result$N <-  array(kfas[[9]], c(m, m, n + 1))
   result$epshat <- t(kfas[[10]])
-  result$Veps <- array(kfas[[11]], c(p, n))
+  result$V_eps <- array(kfas[[11]], c(p, n))
   result$etahat <- t(kfas[[12]])
-  result$Veta <- array(kfas[[13]], c(q, q, n))
+  result$V_eta <- array(kfas[[13]], c(q, q, n))
   result$alphahat <- t(kfas[[14]])
   result$V <-  array(kfas[[15]], c(m, m, n))
 
