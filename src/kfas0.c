@@ -50,13 +50,13 @@ static int epssmooth(
 
   // Temporary storage for intermediate results
   double *Finv = malloc(n * p * sizeof(double));
-  double *L = malloc(m * m * sizeof(double));
-  double *b = malloc(m * sizeof(double));
-  double *c = malloc(m * q * sizeof(double));
-  double *d = malloc(m * m * sizeof(double));
-  double *e = malloc(q * m * sizeof(double));
-  double *f = malloc(q * m * sizeof(double));
-  double g;
+  double *L    = malloc(m * m * sizeof(double));
+  double *m1   = malloc(m * sizeof(double));
+  double *mq   = malloc(m * q * sizeof(double));
+  double *mm   = malloc(m * m * sizeof(double));
+  double *qm_1 = malloc(q * m * sizeof(double));
+  double *qm_2 = mq;
+  double c;
 
   // Create mxm identity matrix
   double *Ident = calloc(m * m, sizeof(double));
@@ -80,10 +80,10 @@ static int epssmooth(
       F77_CALL(dgemm)(
         nt, nt, &inc, &m, &m,
         &pos, Z + i, &p, Ptt + (t * m * m), &m,
-        &zero, b, &m, len_1, len_2);
+        &zero, m1, &m, len_1, len_2);
       F77_CALL(dgemv)(
         nt, &inc, &m,
-        &pos, b, &inc, Z + i, &p,
+        &pos, m1, &inc, Z + i, &p,
         &pos, F + (t * p) + i, &inc, len_1);
       
       // K matrix (6.13)
@@ -98,10 +98,10 @@ static int epssmooth(
         nt, &m, &inc,
         &pos, K + (t * m * p) + (i * m), &p, v + (t * p) + i, &inc,
         &pos, att + (t * m), &inc, len_1);
-      g = neg * F[(t * p) + i];
+      c = neg * F[(t * p) + i];
       F77_CALL(dger)(
         &m, &m,
-        &g, K + (t * m * p) + (i * m), &inc, K + (t * m * p) + (i * m), &inc,
+        &c, K + (t * m * p) + (i * m), &inc, K + (t * m * p) + (i * m), &inc,
         Ptt + (t * m * m), &m);
     }
 
@@ -113,18 +113,18 @@ static int epssmooth(
     F77_CALL(dgemm)(
       nt, nt, &m, &q, &q,
       &pos, R, &m, Q, &q,
-      &zero, c, &m, len_1, len_2);
+      &zero, mq, &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, tr, &m, &m, &q,
-      &pos, c, &m, R, &q,
+      &pos, mq, &m, R, &q,
       &zero, P + ((t + 1) * m * m), &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, nt, &m, &m, &m,
       &pos, T, &m, Ptt + (t * m * m), &m,
-      &zero, d, &m, len_1, len_2);
+      &zero, mm, &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, tr, &m, &m, &m,
-      &pos, d, &m, T, &m,
+      &pos, mm, &m, T, &m,
       &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
   }
 
@@ -147,10 +147,10 @@ static int epssmooth(
     F77_CALL(dgemm)(
         tr, nt, &m, &m, &m,
         &pos, T, &m, N + ((t + 1) * m * m), &m,
-        &zero, d, &m, len_1, len_2);
+        &zero, mm, &m, len_1, len_2);
     F77_CALL(dgemm)(
         nt, nt, &m, &m, &m,
-        &pos, d, &m, T, &m,
+        &pos, mm, &m, T, &m,
         &zero, N + (t * m * m), &m, len_1, len_2);
 
     // Smoothed eta disturbances (4.69)
@@ -158,18 +158,18 @@ static int epssmooth(
     F77_CALL(dgemm)(
       nt, tr, &q, &m, &q,
       &pos, Q, &q, R, &m,
-      &zero, e, &q, len_1, len_2);
+      &zero, qm_1, &q, len_1, len_2);
     F77_CALL(dgemv)(
       nt, &q, &m,
-      &pos, e, &q, r + ((t + 1) * m), &inc,
+      &pos, qm_1, &q, r + ((t + 1) * m), &inc,
       &pos, etahat + (t * q), &inc, len_1);
     F77_CALL(dgemm)(
       nt, nt, &q, &m, &m,
-      &pos, e, &q, N + ((t + 1) * m * m), &m,
-      &zero, f, &q, len_1, len_2);
+      &pos, qm_1, &q, N + ((t + 1) * m * m), &m,
+      &zero, qm_2, &q, len_1, len_2);
     F77_CALL(dgemm)(
       nt, tr, &q, &q, &m,
-      &neg, f, &q, e, &q,
+      &neg, qm_2, &q, qm_1, &q,
       &pos, V_eta + (t * q * q), &q, len_1, len_2);
 
     for (int i = p - 1; i >= 0; i--) {
@@ -182,10 +182,10 @@ static int epssmooth(
       F77_CALL(dgemv)(
         nt, &m, &m,
         &pos, N + (t * m * m), &m, K + (t * m * p) + (i * m), &inc,
-        &zero, b, &inc, len_1);
+        &zero, m1, &inc, len_1);
       F77_CALL(dgemv)(
         tr, &m, &inc,
-        &pos, K + (t * m * p) + (i * m), &m, b, &inc,
+        &pos, K + (t * m * p) + (i * m), &m, m1, &inc,
         &pos, V_eps + (t * p) + i, &inc, len_1);
       V_eps[(t * p) + i] *= H[(i * p) + i] * H[(i * p) + i];
       V_eps[(t * p) + i] = H[(i * p) + i] - V_eps[(t * p) + i];
@@ -198,10 +198,10 @@ static int epssmooth(
         &pos, L, &m, len_1, len_2);
 
       // Weighted sum of innovations (6.15.1)
-      memcpy(b, r + (t * m), m * sizeof(double));
+      memcpy(m1, r + (t * m), m * sizeof(double));
       F77_CALL(dgemv)(
         tr, &m, &m,
-        &pos, L, &m, b, &inc,
+        &pos, L, &m, m1, &inc,
         &zero, r + (t * m), &inc, len_1);
       F77_CALL(dgemv)(
         tr, &inc, &m,
@@ -210,10 +210,10 @@ static int epssmooth(
       F77_CALL(dgemm)(
         tr, nt, &m, &m, &m,
         &pos, L, &m, N + (t * m * m), &m,
-        &zero, d, &m, len_1, len_2);
+        &zero, mm, &m, len_1, len_2);
       F77_CALL(dgemm)(
         nt, nt, &m, &m, &m,
-        &pos, d, &m, L, &m,
+        &pos, mm, &m, L, &m,
         &zero, N + (t * m * m), &m, len_1, len_2);
       F77_CALL(dgemm)(
         tr, nt, &m, &m, &inc,
@@ -229,21 +229,20 @@ static int epssmooth(
     F77_CALL(dgemm)(
       nt, nt, &m, &m, &m,
       &pos, P + (t * m * m), &m, N + (t * m * m), &m,
-      &zero, d, &m, len_1, len_2);
+      &zero, mm, &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, nt, &m, &m, &m,
-      &neg, d, &m, P + (t * m * m), &m,
+      &neg, mm, &m, P + (t * m * m), &m,
       &pos, V + (t * m * m), &m, len_1, len_2);
   }
 
   free(Ident);
   free(Finv);
   free(L);
-  free(b);
-  free(c);
-  free(d);
-  free(e);
-  free(f);
+  free(m1);
+  free(mq);
+  free(mm);
+  free(qm_1);
 
   return 0;
 }
