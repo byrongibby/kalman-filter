@@ -7,7 +7,6 @@
 #include <Rinternals.h>
 #include <R_ext/BLAS.h>
 #include <R_ext/Lapack.h>
-#include <R_ext/RS.h>
 
 static int filter(
     int n,

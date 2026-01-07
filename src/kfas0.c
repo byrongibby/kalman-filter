@@ -7,9 +7,8 @@
 #include <Rinternals.h>
 #include <R_ext/BLAS.h>
 #include <R_ext/Lapack.h>
-#include <R_ext/RS.h>
 
-static int epssmooth(
+static int kfas0_c(
     int n,
     int p,
     int m,
@@ -259,8 +258,6 @@ static int epssmooth(
   return 0;
 }
 
-// int simsmooth()
-
 SEXP kfas0(
     SEXP y,
     SEXP Z,
@@ -329,7 +326,7 @@ SEXP kfas0(
   memset(r_ptr + (n * m), 0, m * sizeof(double));
   memset(N_ptr + (n * m * m), 0, m * m * sizeof(double));
 
-  if (epssmooth(
+  if (kfas0_c(
     n,
     p,
     m,
