@@ -53,7 +53,14 @@ simulate_y <- function(mod, n = 40, seed = 1) {
   m <- ncol(mod$Z)
   q <- ncol(mod$R)
   y <- matrix(0, n, p)
-  alpha <- mod$a1 + drop(t(chol(mod$P1)) %*% rnorm(m))
+  if (is.null(mod$P1inf)) {
+    alpha <- mod$a1 + drop(t(chol(mod$P1)) %*% rnorm(m))
+  } else {
+    # Diffuse elements: draw the initial state with variance P1 + P1inf,
+    # which may be singular
+    e <- eigen(mod$P1 + mod$P1inf, symmetric = TRUE)
+    alpha <- mod$a1 + drop(e$vectors %*% (sqrt(pmax(e$values, 0)) * rnorm(m)))
+  }
   for (t in seq_len(n)) {
     y[t, ] <- at(mod$Z, t) %*% alpha +
       rnorm(p, sd = sqrt(diag(as.matrix(at(mod$H, t)))))
@@ -64,7 +71,7 @@ simulate_y <- function(mod, n = 40, seed = 1) {
 }
 
 run_kfas <- function(mod, y) {
-  kfas(y, mod$Z, mod$H, mod$T, mod$R, mod$Q, mod$a1, mod$P1)
+  kfas(y, mod$Z, mod$H, mod$T, mod$R, mod$Q, mod$a1, mod$P1, mod$P1inf)
 }
 
 # The multivariate routine in src/kfas.cpp is not exported
@@ -87,6 +94,15 @@ run_kfas_multivariate <- function(mod, y, smoother = TRUE,
        logLik = x[[16]])
 }
 
+# Make the initial state diffuse: elements with diffuse = TRUE get
+# P1inf = 1 and P1 = 0, the rest keep their P1
+make_diffuse <- function(mod, diffuse = rep(TRUE, dim(mod$R)[1])) {
+  mod$P1inf <- diag(as.numeric(diffuse), length(diffuse))
+  mod$P1[diffuse, ] <- 0
+  mod$P1[, diffuse] <- 0
+  mod
+}
+
 # Replace H in a p = 2 model with a non-diagonal one
 full_H <- function(mod) {
   mod$H <- matrix(c(1, 0.6, 0.6, 2), 2)
@@ -96,9 +112,11 @@ full_H <- function(mod) {
 run_reference <- function(mod, y) {
   # SSModel only recognises SSMcustom by its bare name in the formula
   SSMcustom <- KFAS::SSMcustom
+  m <- dim(mod$R)[1]
+  P1inf <- if (is.null(mod$P1inf)) matrix(0, m, m) else mod$P1inf
   ssm <- KFAS::SSModel(
     y ~ -1 + SSMcustom(Z = mod$Z, T = mod$T, R = mod$R, Q = mod$Q,
-                       a1 = mod$a1, P1 = mod$P1),
+                       a1 = mod$a1, P1 = mod$P1, P1inf = P1inf),
     H = mod$H)
   KFAS::KFS(ssm, filtering = "state", smoothing = c("state", "disturbance"))
 }

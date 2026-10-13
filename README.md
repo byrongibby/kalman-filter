@@ -14,6 +14,7 @@ using the univariate treatment of multivariate series (Durbin & Koopman,
   with one slice per time step;
 - non-diagonal H, through a Cholesky transformation of the model;
 - missing observations (`NA` in the data), in any pattern;
+- exact diffuse initialisation for states with unknown starting values;
 - the Gaussian log-likelihood, for maximum likelihood estimation;
 - filtering only, or filtering and state smoothing only, via the
   `smoother` and `disturbances` arguments.
@@ -31,11 +32,13 @@ planned features.
 ```r
 library(kfilter)
 
-# Local level model for the Nile data (Durbin & Koopman, section 2.10)
+# Local level model for the Nile data (Durbin & Koopman, section 2.10),
+# with a diffuse initial level
 y <- matrix(as.numeric(Nile))
 fit <- kfas(y, obsmat = matrix(1), obsvar = matrix(15099),
             statemat = matrix(1), vartrans = matrix(1),
-            statevar = matrix(1469.1), inita = 0, initp = matrix(1e7))
+            statevar = matrix(1469.1), inita = 0, initp = matrix(0),
+            initpinf = matrix(1))
 
 plot(as.numeric(Nile), ylab = "Flow")
 lines(fit$alphahat[, 1])

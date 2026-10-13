@@ -13,7 +13,8 @@
 #' \deqn{\alpha_{t+1} = T_t \alpha_t + R_t \eta_t, \qquad
 #'   \eta_t \sim N(0, Q_t)}{alpha[t+1] = T[t] alpha[t] + R[t] eta[t],
 #'   eta[t] ~ N(0, Q[t])}
-#' \deqn{\alpha_1 \sim N(a_1, P_1)}{alpha[1] ~ N(a1, P1)}
+#' \deqn{\alpha_1 \sim N(a_1, P_{*} + \kappa P_\infty), \quad
+#'   \kappa \to \infty}{alpha[1] ~ N(a1, P1 + kappa P1inf), kappa -> infinity}
 #'
 #' for \eqn{t = 1, \dots, n}, with \eqn{p} observed series, \eqn{m}
 #' states and \eqn{q} state disturbances. \eqn{T_t}, \eqn{R_t} and
@@ -41,6 +42,23 @@
 #'
 #' KFAS uses an LDL decomposition instead, so for non-diagonal \eqn{H} its
 #' `v`, `F`, `epshat` and `V_eps` are on a different scale.
+#'
+#' @section Diffuse initialisation:
+#' Elements of the initial state with unknown starting values (for example
+#' the level of a non-stationary series) are given a diffuse prior through
+#' `initpinf`: \eqn{P_1 = P_{*} + \kappa P_\infty} with
+#' \eqn{\kappa \to \infty}. The filter and smoother use the exact diffuse
+#' initialisation of Durbin and Koopman (2012, chapter 5) in its univariate
+#' form, so no large-variance approximation is needed. Typically
+#' `initpinf` has ones on the diagonal for the diffuse elements and zeros
+#' elsewhere, and `initp` has zero rows and columns for them.
+#'
+#' The diffuse phase lasts until \eqn{P_\infty} becomes zero, which ends
+#' at series `j` of time step `d` (both returned). During it, `F` holds
+#' \eqn{F_{*}} and `Finf` holds \eqn{F_\infty}; observations with
+#' \eqn{F_\infty > 0} contribute \eqn{-\frac{1}{2} \log F_\infty}{-log(Finf) / 2}
+#' to the diffuse log-likelihood, without the \eqn{\log 2\pi}{log(2 pi)}
+#' constant, as in KFAS.
 #'
 #' @section Missing observations:
 #' `NA` (or `NaN`) elements of `obs` are treated as missing: the filter
@@ -76,9 +94,11 @@
 #'   \eqn{q \times q}{q x q}, or \eqn{q \times q \times n}{q x q x n}.
 #' @param inita Mean of the initial state \eqn{a_1}: a length-\eqn{m}
 #'   vector.
-#' @param initp Variance of the initial state \eqn{P_1}:
-#'   \eqn{m \times m}{m x m}. A diffuse initial state can be approximated
-#'   with a large multiple of the identity.
+#' @param initp Variance of the initial state, \eqn{P_1} (or its
+#'   non-diffuse part \eqn{P_{*}}): \eqn{m \times m}{m x m}.
+#' @param initpinf Diffuse part of the initial state variance,
+#'   \eqn{P_\infty}: \eqn{m \times m}{m x m}, or `NULL` (the default)
+#'   for no diffuse elements. See the Diffuse initialisation section.
 #' @param smoother If `TRUE` (the default), compute the smoothed state
 #'   `alphahat` and its variance `V`. Otherwise they are `NA`.
 #' @param disturbances If `TRUE` (the default), compute the smoothed
@@ -122,13 +142,21 @@
 #'     \eqn{E(\alpha_t | y)}.}
 #'   \item{`V`}{\eqn{m \times m \times n}{m x m x n} smoothed state
 #'     variances \eqn{Var(\alpha_t | y)}.}
+#'   \item{`Pinf`}{\eqn{m \times m \times d}{m x m x d} diffuse parts
+#'     \eqn{P_{\infty,t}} of the predicted state variances over the
+#'     diffuse phase.}
+#'   \item{`Finf`}{\eqn{p \times d}{p x d} diffuse parts
+#'     \eqn{F_{\infty,t,i}} of the prediction error variances.}
+#'   \item{`d`, `j`}{The diffuse phase ends at series `j` of time step `d`
+#'     (both 0 without diffuse elements).}
 #'   \item{`logLik`}{The Gaussian log-likelihood
 #'     \eqn{\log p(y_1, \dots, y_n)}, including the
 #'     \eqn{-\frac{1}{2} \log 2\pi}{-log(2 pi) / 2} constant per
 #'     observation. Missing and uninformative observations (see above) do
 #'     not contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
 #'     Cholesky transform, so it is the likelihood of the original
-#'     \eqn{y}. Computed by the filter, whatever `smoother` and
+#'     \eqn{y}. With a diffuse initial state it is the diffuse
+#'     log-likelihood (see the Diffuse initialisation section). Computed by the filter, whatever `smoother` and
 #'     `disturbances` are. Use [kfas_loglik()] when only the
 #'     log-likelihood is needed.}
 #' }
@@ -138,11 +166,13 @@
 #'
 #' @examples
 #' # Local level model for the Nile data, with the maximum likelihood
-#' # variances from Durbin and Koopman (2012, section 2.10)
+#' # variances from Durbin and Koopman (2012, section 2.10) and a diffuse
+#' # initial level
 #' y <- matrix(as.numeric(Nile))
 #' fit <- kfas(y, obsmat = matrix(1), obsvar = matrix(15099),
 #'             statemat = matrix(1), vartrans = matrix(1),
-#'             statevar = matrix(1469.1), inita = 0, initp = matrix(1e7))
+#'             statevar = matrix(1469.1), inita = 0, initp = matrix(0),
+#'             initpinf = matrix(1))
 #' plot(as.numeric(Nile), type = "p", ylab = "Flow")
 #' lines(fit$alphahat[, 1])
 #'
@@ -152,11 +182,11 @@
 #' Q <- array(1469.1, c(1, 1, n))
 #' Q[1, 1, 29:n] <- 2 * 1469.1
 #' fit_tv <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1), Q,
-#'                0, matrix(1e7))
+#'                0, matrix(0), matrix(1))
 #'
 #' # Filtering only
 #' filtered <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
-#'                  matrix(1469.1), 0, matrix(1e7),
+#'                  matrix(1469.1), 0, matrix(0), matrix(1),
 #'                  smoother = FALSE, disturbances = FALSE)
 #'
 #' @export
@@ -169,10 +199,12 @@ kfas <- function(
   statevar,
   inita,
   initp,
+  initpinf = NULL,
   smoother = TRUE,
   disturbances = TRUE
 ) {
   if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
+  if (is.null(initpinf)) initpinf <- diffuse_none(vartrans)
 
   x <- .Call(
     "kfas0",
@@ -184,6 +216,7 @@ kfas <- function(
     as_double(statevar),
     as_double(inita),
     as_double(initp),
+    as_double(initpinf),
     as.logical(smoother),
     as.logical(disturbances)
   )
@@ -206,7 +239,11 @@ kfas <- function(
     V_eta = x[[13]],
     alphahat = t(x[[14]]),
     V = x[[15]],
-    logLik = x[[16]]
+    logLik = x[[16]],
+    Pinf = x[[17]],
+    Finf = x[[18]],
+    d = x[[19]],
+    j = x[[20]]
   )
 }
 
@@ -228,12 +265,12 @@ kfas <- function(
 #'
 #' @examples
 #' # Maximum likelihood estimation of the two variances of the local level
-#' # model for the Nile data. (The large initp approximates a diffuse
-#' # initial state, so the first observation's contribution depends on it.)
+#' # model for the Nile data, with a diffuse initial level
 #' y <- matrix(as.numeric(Nile))
 #' negloglik <- function(log_var) {
 #'   -kfas_loglik(y, matrix(1), matrix(exp(log_var[1])), matrix(1),
-#'                matrix(1), matrix(exp(log_var[2])), 0, matrix(1e7))
+#'                matrix(1), matrix(exp(log_var[2])), 0, matrix(0),
+#'                matrix(1))
 #' }
 #' fit <- optim(c(log(var(y)), log(var(y))), negloglik)
 #' exp(fit$par)
@@ -247,9 +284,11 @@ kfas_loglik <- function(
   vartrans,
   statevar,
   inita,
-  initp
+  initp,
+  initpinf = NULL
 ) {
   if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
+  if (is.null(initpinf)) initpinf <- diffuse_none(vartrans)
 
   .Call(
     "kfas0_loglik",
@@ -260,8 +299,15 @@ kfas_loglik <- function(
     as_double(vartrans),
     as_double(statevar),
     as_double(inita),
-    as_double(initp)
+    as_double(initp),
+    as_double(initpinf)
   )
+}
+
+# No diffuse initial elements: an m x m zero matrix, m from R (vartrans)
+diffuse_none <- function(vartrans) {
+  m <- if (is.null(dim(vartrans))) 1 else dim(vartrans)[1]
+  matrix(0, m, m)
 }
 
 # Convert to double storage, keeping dimensions; the C code reads doubles

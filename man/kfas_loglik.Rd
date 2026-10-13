@@ -4,7 +4,17 @@
 \alias{kfas_loglik}
 \title{Log-likelihood of a state space model}
 \usage{
-kfas_loglik(obs, obsmat, obsvar, statemat, vartrans, statevar, inita, initp)
+kfas_loglik(
+  obs,
+  obsmat,
+  obsvar,
+  statemat,
+  vartrans,
+  statevar,
+  inita,
+  initp,
+  initpinf = NULL
+)
 }
 \arguments{
 \item{obs}{Observations \eqn{y}: an \eqn{n \times p}{n x p} numeric
@@ -30,9 +40,12 @@ Its dimensions define \eqn{m} and \eqn{q}.}
 \item{inita}{Mean of the initial state \eqn{a_1}: a length-\eqn{m}
 vector.}
 
-\item{initp}{Variance of the initial state \eqn{P_1}:
-\eqn{m \times m}{m x m}. A diffuse initial state can be approximated
-with a large multiple of the identity.}
+\item{initp}{Variance of the initial state, \eqn{P_1} (or its
+non-diffuse part \eqn{P_{*}}): \eqn{m \times m}{m x m}.}
+
+\item{initpinf}{Diffuse part of the initial state variance,
+\eqn{P_\infty}: \eqn{m \times m}{m x m}, or \code{NULL} (the default)
+for no diffuse elements. See the Diffuse initialisation section.}
 }
 \value{
 The log-likelihood \eqn{\log p(y_1, \dots, y_n)}, a single
@@ -51,12 +64,12 @@ The model, arguments, time-varying system matrices, non-diagonal
 }
 \examples{
 # Maximum likelihood estimation of the two variances of the local level
-# model for the Nile data. (The large initp approximates a diffuse
-# initial state, so the first observation's contribution depends on it.)
+# model for the Nile data, with a diffuse initial level
 y <- matrix(as.numeric(Nile))
 negloglik <- function(log_var) {
   -kfas_loglik(y, matrix(1), matrix(exp(log_var[1])), matrix(1),
-               matrix(1), matrix(exp(log_var[2])), 0, matrix(1e7))
+               matrix(1), matrix(exp(log_var[2])), 0, matrix(0),
+               matrix(1))
 }
 fit <- optim(c(log(var(y)), log(var(y))), negloglik)
 exp(fit$par)

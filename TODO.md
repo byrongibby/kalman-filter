@@ -9,13 +9,6 @@ Koopman (2012):
 
 ## Features
 
-- [ ] **Exact diffuse initialisation.** Currently a diffuse initial state
-  is approximated by a large `P1`, which loses precision (relative error
-  around 1e-3 in `V` at t = 2 with `P1 = 1e7 I`). Implement the exact
-  initialisation of Durbin & Koopman (ch. 5, univariate form in
-  section 6.4) with `P1 = P1_star + kappa * P1_inf`, as KFAS does with
-  `P1inf`.
-
 - [ ] **Mean adjustments.** Allow intercepts in both equations:
 
       y_t       = d_t + Z_t alpha_t + eps_t
