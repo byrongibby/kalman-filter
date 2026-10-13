@@ -42,6 +42,17 @@
 #' KFAS uses an LDL decomposition instead, so for non-diagonal \eqn{H} its
 #' `v`, `F`, `epshat` and `V_eps` are on a different scale.
 #'
+#' @section Missing observations:
+#' `NA` (or `NaN`) elements of `obs` are treated as missing: the filter
+#' skips them and every output conditions on the observed elements only.
+#' Any pattern is allowed, including time steps with nothing observed.
+#' At a missing \eqn{y_{t,i}}, `v`, `F` and `K` are `NA`; `epshat` and
+#' `V_eps` give the conditional mean and variance of
+#' \eqn{\varepsilon_{t,i}} given the observed data (0 and
+#' \eqn{H_{t,ii}} when \eqn{H_t} is diagonal). With non-diagonal
+#' \eqn{H_t}, the Cholesky transform at each time step uses only the
+#' observed elements.
+#'
 #' @section Uninformative observations:
 #' When the prediction error variance \eqn{F_{t,i}} of an element is zero
 #' to within rounding error (for example a series with zero loadings and
@@ -50,7 +61,7 @@
 #' passes over it.
 #'
 #' @param obs Observations \eqn{y}: an \eqn{n \times p}{n x p} numeric
-#'   matrix, one row per time step.
+#'   matrix, one row per time step. `NA` marks missing observations.
 #' @param obsmat Observation matrix \eqn{Z}: \eqn{p \times m}{p x m}, or
 #'   \eqn{p \times m \times n}{p x m x n} if time-varying.
 #' @param obsvar Observation noise variance \eqn{H}:
@@ -114,8 +125,8 @@
 #'   \item{`logLik`}{The Gaussian log-likelihood
 #'     \eqn{\log p(y_1, \dots, y_n)}, including the
 #'     \eqn{-\frac{1}{2} \log 2\pi}{-log(2 pi) / 2} constant per
-#'     observation. Uninformative observations (see above) do not
-#'     contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
+#'     observation. Missing and uninformative observations (see above) do
+#'     not contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
 #'     Cholesky transform, so it is the likelihood of the original
 #'     \eqn{y}. Computed by the filter, whatever `smoother` and
 #'     `disturbances` are.}

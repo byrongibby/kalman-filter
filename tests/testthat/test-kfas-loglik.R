@@ -1,39 +1,3 @@
-# Exact log-likelihood of y_1..y_n from the joint normal distribution of
-# the stacked observations: alpha_t is linear in xi = (alpha_1, eta_1, ...,
-# eta_n-1), so y = B xi + eps with Var(y) = B Var(xi) B' + blockdiag(H_t)
-exact_loglik <- function(mod, y) {
-  n <- nrow(y)
-  p <- ncol(y)
-  m <- dim(mod$R)[1]
-  q <- dim(mod$R)[2]
-  k <- m + (n - 1) * q
-
-  A <- cbind(diag(m), matrix(0, m, k - m))  # alpha_t = A xi
-  B <- matrix(0, n * p, k)
-  var_xi <- matrix(0, k, k)
-  var_xi[1:m, 1:m] <- mod$P1
-  var_eps <- matrix(0, n * p, n * p)
-  for (t in seq_len(n)) {
-    rows <- (t - 1) * p + seq_len(p)
-    B[rows, ] <- at(mod$Z, t) %*% A
-    var_eps[rows, rows] <- at(mod$H, t)
-    if (t < n) {
-      cols <- m + (t - 1) * q + seq_len(q)
-      var_xi[cols, cols] <- at(mod$Q, t)
-      E <- matrix(0, q, k)
-      E[, cols] <- diag(q)
-      A <- at(mod$T, t) %*% A + at(mod$R, t) %*% E
-    }
-  }
-
-  mean_xi <- c(mod$a1, rep(0, k - m))
-  S <- B %*% var_xi %*% t(B) + var_eps
-  e <- as.vector(t(y)) - drop(B %*% mean_xi)
-  U <- chol(S)
-  -0.5 * (n * p * log(2 * pi) + 2 * sum(log(diag(U))) +
-            sum(backsolve(U, e, transpose = TRUE)^2))
-}
-
 all_matrices <- c("Z", "H", "T", "R", "Q")
 models <- list(
   local_level  = local_level(),
@@ -65,7 +29,7 @@ test_that("logLik equals the exact joint density of all observations", {
   for (name in names(models)) {
     mod <- models[[name]]
     y <- simulate_y(mod)
-    expected <- exact_loglik(mod, y)
+    expected <- exact_posterior(mod, y)$logLik
 
     expect_equal(run_kfas(mod, y)$logLik, expected, tolerance = 1e-10,
                  label = paste(name, "univariate"))

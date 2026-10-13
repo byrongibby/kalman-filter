@@ -122,6 +122,16 @@ static void kfas0_c(
     memcpy(Ptt + (t * m * m), P + (t * m * m), m * m * sizeof(double));
     
     for (int i = 0; i < p; i++) {
+      // A missing observation carries no information: no update, and K = 0
+      // and Finv = 0 make the smoother pass r and N through unchanged
+      if (ISNAN(y[(t * p) + i])) {
+        v[(t * p) + i] = NA_REAL;
+        F[(t * p) + i] = NA_REAL;
+        Finv[(t * p) + i] = 0.0;
+        memset(K + (t * m * p) + (i * m), 0, m * sizeof(double));
+        continue;
+      }
+
       // Innovation (6.13)
       v[(t * p) + i] -= F77_CALL(ddot)(
         &m, Z_t + i, &p, att + (t * m), &inc);
@@ -246,16 +256,20 @@ static void kfas0_c(
           &zero, m1, &inc, len_1);
         double s = F77_CALL(ddot)(&m, K_ti, &inc, m1, &inc);
 
+        // Finv v, which is zero for skipped observations (v may be NA)
+        double Finv_v = Finv[(t * p) + i] != 0.0 ?
+          Finv[(t * p) + i] * v[(t * p) + i] : 0.0;
+
         if (disturbances) {
           // Smoothed epsilon disturbances
           epshat[(t * p) + i] =
-            H_t[(i * p) + i] * (Finv[(t * p) + i] * v[(t * p) + i] - Kr);
+            H_t[(i * p) + i] * (Finv_v - Kr);
           V_eps[(t * p) + i] = H_t[(i * p) + i] -
             H_t[(i * p) + i] * H_t[(i * p) + i] * (Finv[(t * p) + i] + s);
         }
 
         // Weighted sum of innovations (6.15.1)
-        c = Finv[(t * p) + i] * v[(t * p) + i] - Kr;
+        c = Finv_v - Kr;
         F77_CALL(daxpy)(&m, &c, Z_t + i, &p, r + (t * m), &inc);
         F77_CALL(dger)(
           &m, &m,
@@ -402,7 +416,23 @@ extern "C" SEXP kfas0(
   double *L = NULL;
   bool diagonal = is_diagonal(H_ptr, p, dH ? n : 1);
 
+  // Observed elements of each y_t: count n_obs[t] and indices obs[t * p + j]
+  bool has_missing = false;
+  int *n_obs = NULL;
+  int *obs = NULL;
   if (!diagonal) {
+    n_obs = (int *) R_alloc(n, sizeof(int));
+    obs = (int *) R_alloc((size_t) n * p, sizeof(int));
+    for (ptrdiff_t t = 0; t < n; t++) {
+      n_obs[t] = 0;
+      for (int i = 0; i < p; i++) {
+        if (!ISNAN(y_ptr[(t * p) + i])) obs[(t * p) + n_obs[t]++] = i;
+      }
+      if (n_obs[t] < p) has_missing = true;
+    }
+  }
+
+  if (!diagonal && !has_missing) {
     L = (double *) R_alloc((size_t) p * p * (dH ? n : 1), sizeof(double));
     cholesky(H_ptr, p, dH ? n : 1, L);
 
@@ -425,7 +455,58 @@ extern "C" SEXP kfas0(
         &pos, L + (k * dL), &p, Z_in + (k * p * m), &p,
         len_1, len_1, len_1, len_1);
     }
+  } else if (!diagonal) {
+    // With missing observations, transform each y_t using only its observed
+    // elements: H_oo = L_t L_t' (stored compactly, leading dimension
+    // n_obs[t]). Missing elements of y* stay NA and are skipped.
+    dL = p * p;
+    L = (double *) R_alloc((size_t) n * p * p, sizeof(double));
+    y_in = (double *) R_alloc((size_t) n * p, sizeof(double));
+    fill_na(y_in, (R_xlen_t) n * p);
+    dZ_in = p * m;
+    Z_in = (double *) S_alloc((size_t) n * p * m, sizeof(double));
+    double *yc = (double *) R_alloc(p, sizeof(double));
+    double *Zc = (double *) R_alloc(p * m, sizeof(double));
+    int info;
 
+    for (ptrdiff_t t = 0; t < n; t++) {
+      int po = n_obs[t];
+      int *idx = obs + (t * p);
+      double *H_t = H_ptr + (t * dH);
+      double *Z_t = Z_ptr + (t * dZ);
+      double *L_t = L + (t * dL);
+      if (po == 0) continue;
+
+      for (int k = 0; k < po; k++) {
+        for (int j = 0; j < po; j++) L_t[j + (k * po)] = H_t[idx[j] + (idx[k] * p)];
+      }
+      F77_CALL(dpotrf)(lo, &po, L_t, &po, &info, len_1);
+      if (info != 0) {
+        error("H is not positive definite at time %lld", (long long) t + 1);
+      }
+
+      for (int j = 0; j < po; j++) yc[j] = y_ptr[(t * p) + idx[j]];
+      F77_CALL(dtrsv)(
+        lo, nt, nu, &po,
+        L_t, &po, yc, &inc, len_1, len_1, len_1);
+      for (int j = 0; j < po; j++) y_in[(t * p) + idx[j]] = yc[j];
+
+      for (int c = 0; c < m; c++) {
+        for (int j = 0; j < po; j++) Zc[j + (c * po)] = Z_t[idx[j] + (c * p)];
+      }
+      F77_CALL(dtrsm)(
+        lf, lo, nt, nu, &po, &m,
+        &pos, L_t, &po, Zc, &po,
+        len_1, len_1, len_1, len_1);
+      for (int c = 0; c < m; c++) {
+        for (int j = 0; j < po; j++) {
+          Z_in[(t * p * m) + idx[j] + (c * p)] = Zc[j + (c * po)];
+        }
+      }
+    }
+  }
+
+  if (!diagonal) {
     H_in = (double *) S_alloc(p * p, sizeof(double));
     for (int i = 0; i < p; i++) H_in[(i * p) + i] = 1.0;
     dH_in = 0;
@@ -470,32 +551,80 @@ extern "C" SEXP kfas0(
     do_disturbances
   );
 
+  // L_t has leading dimension n_obs[t] (p when nothing is missing)
   if (!diagonal) {
     // Jacobian of y* = L^-1 y: log f(y) = log f(y*) - sum_t log det L_t
     double log_det = 0.0;
-    for (ptrdiff_t k = 0; k < (dH ? n : 1); k++) {
-      for (int i = 0; i < p; i++) log_det += log(L[(k * p * p) + (i * p) + i]);
+    for (ptrdiff_t t = 0; t < n; t++) {
+      for (int j = 0; j < n_obs[t]; j++) {
+        log_det += log(L[(t * dL) + (j * n_obs[t]) + j]);
+      }
     }
-    REAL(loglik)[0] -= dH ? log_det : n * log_det;
+    REAL(loglik)[0] -= log_det;
   }
 
   if (!diagonal && do_disturbances) {
-    // Return the epsilon disturbances in the original scale, using
-    // epshat = L epshat* (= y - Z alphahat) and Var(eps | y) = Z V Z'
+    // Return the epsilon disturbances in the original scale. Observed
+    // elements: epshat_o = L epshat*_o (= y_o - Z_o alphahat) and
+    // Var(eps_i | y) = Z_i V Z_i'. Missing elements, from the conditional
+    // distribution given eps_o with g = H_oo^-1 H_oi:
+    //   epshat_i = g' epshat_o
+    //   Var(eps_i | y) = H_ii - H_io g + (Z_o' g)' V (Z_o' g)
     // (diagonal only). v, F and K stay in the transformed scale.
     double *m1 = (double *) R_alloc(m, sizeof(double));
-    for (ptrdiff_t t = 0; t < n; t++) {
-      double *Z_t = Z_ptr + (t * dZ);
+    double *u  = (double *) R_alloc(m, sizeof(double));
+    double *e  = (double *) R_alloc(p, sizeof(double));
+    double *h  = (double *) R_alloc(p, sizeof(double));
+    double *g  = (double *) R_alloc(p, sizeof(double));
+    int info;
 
-      F77_CALL(dtrmv)(
-        lo, nt, nu, &p,
-        L + (t * dL), &p, epshat_ptr + (t * p), &inc, len_1, len_1, len_1);
+    for (ptrdiff_t t = 0; t < n; t++) {
+      int po = n_obs[t];
+      int *idx = obs + (t * p);
+      double *H_t = H_ptr + (t * dH);
+      double *Z_t = Z_ptr + (t * dZ);
+      double *L_t = L + (t * dL);
+      double *V_t = V_ptr + (t * m * m);
+
+      for (int j = 0; j < po; j++) e[j] = epshat_ptr[(t * p) + idx[j]];
+      if (po > 0) {
+        F77_CALL(dtrmv)(
+          lo, nt, nu, &po,
+          L_t, &po, e, &inc, len_1, len_1, len_1);
+      }
+
+      int j = 0;
       for (int i = 0; i < p; i++) {
-        F77_CALL(dsymv)(
-          up, &m,
-          &pos, V_ptr + (t * m * m), &m, Z_t + i, &p,
-          &zero, m1, &inc, len_1);
-        V_eps_ptr[(t * p) + i] = F77_CALL(ddot)(&m, Z_t + i, &p, m1, &inc);
+        if (j < po && idx[j] == i) {
+          // Observed
+          epshat_ptr[(t * p) + i] = e[j++];
+          F77_CALL(dsymv)(
+            up, &m,
+            &pos, V_t, &m, Z_t + i, &p,
+            &zero, m1, &inc, len_1);
+          V_eps_ptr[(t * p) + i] = F77_CALL(ddot)(&m, Z_t + i, &p, m1, &inc);
+        } else if (po == 0) {
+          // Missing, with nothing observed at time t
+          epshat_ptr[(t * p) + i] = 0.0;
+          V_eps_ptr[(t * p) + i] = H_t[(i * p) + i];
+        } else {
+          // Missing
+          for (int k = 0; k < po; k++) h[k] = H_t[idx[k] + (i * p)];
+          memcpy(g, h, po * sizeof(double));
+          F77_CALL(dpotrs)(lo, &po, &inc, L_t, &po, g, &po, &info, len_1);
+          memset(u, 0, m * sizeof(double));
+          for (int k = 0; k < po; k++) {
+            F77_CALL(daxpy)(&m, g + k, Z_t + idx[k], &p, u, &inc);
+          }
+          F77_CALL(dsymv)(
+            up, &m,
+            &pos, V_t, &m, u, &inc,
+            &zero, m1, &inc, len_1);
+          epshat_ptr[(t * p) + i] = F77_CALL(ddot)(&po, g, &inc, e, &inc);
+          V_eps_ptr[(t * p) + i] = H_t[(i * p) + i] -
+            F77_CALL(ddot)(&po, h, &inc, g, &inc) +
+            F77_CALL(ddot)(&m, u, &inc, m1, &inc);
+        }
       }
     }
   }

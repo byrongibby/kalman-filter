@@ -13,6 +13,7 @@ using the univariate treatment of multivariate series (Durbin & Koopman,
 - time-varying system matrices: any of Z, H, T, R and Q can be an array
   with one slice per time step;
 - non-diagonal H, through a Cholesky transformation of the model;
+- missing observations (`NA` in the data), in any pattern;
 - the Gaussian log-likelihood, for maximum likelihood estimation;
 - filtering only, or filtering and state smoothing only, via the
   `smoother` and `disturbances` arguments.

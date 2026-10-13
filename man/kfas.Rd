@@ -19,7 +19,7 @@ kfas(
 }
 \arguments{
 \item{obs}{Observations \eqn{y}: an \eqn{n \times p}{n x p} numeric
-matrix, one row per time step.}
+matrix, one row per time step. \code{NA} marks missing observations.}
 
 \item{obsmat}{Observation matrix \eqn{Z}: \eqn{p \times m}{p x m}, or
 \eqn{p \times m \times n}{p x m x n} if time-varying.}
@@ -93,8 +93,8 @@ variances \eqn{Var(\alpha_t | y)}.}
 \item{\code{logLik}}{The Gaussian log-likelihood
 \eqn{\log p(y_1, \dots, y_n)}, including the
 \eqn{-\frac{1}{2} \log 2\pi}{-log(2 pi) / 2} constant per
-observation. Uninformative observations (see above) do not
-contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
+observation. Missing and uninformative observations (see above) do
+not contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
 Cholesky transform, so it is the likelihood of the original
 \eqn{y}. Computed by the filter, whatever \code{smoother} and
 \code{disturbances} are.}
@@ -149,6 +149,19 @@ factored as \eqn{L_t L_t'} (Cholesky) and the model is filtered with
 
 KFAS uses an LDL decomposition instead, so for non-diagonal \eqn{H} its
 \code{v}, \code{F}, \code{epshat} and \code{V_eps} are on a different scale.
+}
+
+\section{Missing observations}{
+
+\code{NA} (or \code{NaN}) elements of \code{obs} are treated as missing: the filter
+skips them and every output conditions on the observed elements only.
+Any pattern is allowed, including time steps with nothing observed.
+At a missing \eqn{y_{t,i}}, \code{v}, \code{F} and \code{K} are \code{NA}; \code{epshat} and
+\code{V_eps} give the conditional mean and variance of
+\eqn{\varepsilon_{t,i}} given the observed data (0 and
+\eqn{H_{t,ii}} when \eqn{H_t} is diagonal). With non-diagonal
+\eqn{H_t}, the Cholesky transform at each time step uses only the
+observed elements.
 }
 
 \section{Uninformative observations}{

@@ -53,7 +53,6 @@ static void kfas_c(
   const char *tr = "t";
   const char *nt = "n";
   const char *up = "u";
-  const char *lf = "l";
   const char *rt = "r";
   int inc = 1;
   int info;
@@ -85,6 +84,16 @@ static void kfas_c(
   double *qm_2 = mq;
   double *RQR  = (double *) R_alloc(m * m, sizeof(double));
 
+  // Observed elements of each y_t: count n_obs[t] and indices obs[t * p + j].
+  // Quantities kept for the smoother are stored compactly for the observed
+  // sub-vector (leading dimension n_obs[t]).
+  int *n_obs   = (int *) R_alloc(n, sizeof(int));
+  int *obs     = (int *) R_alloc((size_t) n * p, sizeof(int));
+  double *yc   = (double *) R_alloc(p,     sizeof(double));
+  double *Zc   = (double *) R_alloc(p * m, sizeof(double));
+  double *Hc   = (double *) R_alloc(p * p, sizeof(double));
+  double *Mc   = (double *) R_alloc(m * p, sizeof(double));
+
   // RQR' and QR' are computed once unless R or Q vary over time
   bool varying_RQ = (dR != 0 || dQ != 0);
   if (!varying_RQ) {
@@ -92,8 +101,10 @@ static void kfas_c(
     compute_QR(m, q, R, Q, qm_1);
   }
 
-  // Log-likelihood (7.2): sum of log det F + v' F^-1 v
+  // Log-likelihood (7.2): sum of log det F + v' F^-1 v over the observed
+  // sub-vectors, with the constant added at the end
   double ll_sum = 0.0;
+  ptrdiff_t n_total = 0;
 
   // Filter
   for (ptrdiff_t t = 0; t < n; t++) {
@@ -111,65 +122,93 @@ static void kfas_c(
     double *Kg_t  = Kg + (t * m * p);
     double *att_t = att + (t * m);
     double *Ptt_t = Ptt + (t * m * m);
+    int *idx = obs + (t * p);
 
-    // Innovation v = y - Z a (4.24)
-    memcpy(v_t, y + (t * p), p * sizeof(double));
-    F77_CALL(dgemv)(
-      nt, &p, &m,
-      &neg, Z_t, &p, a_t, &inc,
-      &pos, v_t, &inc, len_1);
+    int po = 0;
+    for (int i = 0; i < p; i++) if (!ISNAN(y[(t * p) + i])) idx[po++] = i;
+    n_obs[t] = po;
+    n_total += po;
 
-    // M = P Z' (returned as K), F = Z M + H
-    F77_CALL(dgemm)(
-      nt, tr, &m, &p, &m,
-      &pos, P_t, &m, Z_t, &p,
-      &zero, K_t, &m, len_1, len_2);
-    memcpy(F_t, H_t, p * p * sizeof(double));
-    F77_CALL(dgemm)(
-      nt, nt, &p, &p, &m,
-      &pos, Z_t, &p, K_t, &m,
-      &pos, F_t, &p, len_1, len_2);
+    // v, F and K are NA at missing observations
+    fill_na(v_t, p);
+    fill_na(F_t, p * p);
+    fill_na(K_t, m * p);
 
-    // F = U'U (Cholesky), then F^-1 v and F^-1 Z
-    memcpy(U_t, F_t, p * p * sizeof(double));
-    F77_CALL(dpotrf)(up, &p, U_t, &p, &info, len_1);
-    if (info != 0) {
-      error("F is not positive definite at time %lld; observations with no "
-            "information are only supported by the univariate treatment",
-            (long long) t + 1);
-    }
-    memcpy(w_t, v_t, p * sizeof(double));
-    F77_CALL(dpotrs)(up, &p, &inc, U_t, &p, w_t, &p, &info, len_1);
-    memcpy(FZ_t, Z_t, p * m * sizeof(double));
-    F77_CALL(dpotrs)(up, &p, &m, U_t, &p, FZ_t, &p, &info, len_1);
-
-    // log det F = 2 sum log diag(U)
-    for (int i = 0; i < p; i++) ll_sum += 2.0 * log(U_t[(i * p) + i]);
-    ll_sum += F77_CALL(ddot)(&p, v_t, &inc, w_t, &inc);
-
-    // G = F^-1 Z P = (M F^-1)'
-    F77_CALL(dsymm)(
-      rt, up, &p, &m,
-      &pos, P_t, &m, FZ_t, &p,
-      &zero, G, &p, len_1, len_1);
-
-    // Update (4.26): att = a + M F^-1 v, Ptt = P - M F^-1 M'
     memcpy(att_t, a_t, m * sizeof(double));
-    F77_CALL(dgemv)(
-      tr, &p, &m,
-      &pos, G, &p, v_t, &inc,
-      &pos, att_t, &inc, len_1);
     memcpy(Ptt_t, P_t, m * m * sizeof(double));
-    F77_CALL(dgemm)(
-      nt, nt, &m, &m, &p,
-      &neg, K_t, &m, G, &p,
-      &pos, Ptt_t, &m, len_1, len_2);
 
-    // Kalman gain K = T M F^-1 (4.24), kept for the smoother
-    F77_CALL(dgemm)(
-      nt, tr, &m, &p, &m,
-      &pos, T_t, &m, G, &p,
-      &zero, Kg_t, &m, len_1, len_2);
+    if (po > 0) {
+      // Observed sub-vector y_o, Z_o, H_oo
+      for (int j = 0; j < po; j++) yc[j] = y[(t * p) + idx[j]];
+      for (int c = 0; c < m; c++) {
+        for (int j = 0; j < po; j++) Zc[j + (c * po)] = Z_t[idx[j] + (c * p)];
+      }
+      for (int k = 0; k < po; k++) {
+        for (int j = 0; j < po; j++) Hc[j + (k * po)] = H_t[idx[j] + (idx[k] * p)];
+      }
+
+      // Innovation v = y - Z a (4.24)
+      F77_CALL(dgemv)(
+        nt, &po, &m,
+        &neg, Zc, &po, a_t, &inc,
+        &pos, yc, &inc, len_1);
+      for (int j = 0; j < po; j++) v_t[idx[j]] = yc[j];
+
+      // M = P Z' (returned as K), F = Z M + H
+      F77_CALL(dgemm)(
+        nt, tr, &m, &po, &m,
+        &pos, P_t, &m, Zc, &po,
+        &zero, Mc, &m, len_1, len_2);
+      for (int j = 0; j < po; j++) {
+        memcpy(K_t + (idx[j] * m), Mc + (j * m), m * sizeof(double));
+      }
+      memcpy(U_t, Hc, po * po * sizeof(double));
+      F77_CALL(dgemm)(
+        nt, nt, &po, &po, &m,
+        &pos, Zc, &po, Mc, &m,
+        &pos, U_t, &po, len_1, len_2);
+      for (int k = 0; k < po; k++) {
+        for (int j = 0; j < po; j++) F_t[idx[j] + (idx[k] * p)] = U_t[j + (k * po)];
+      }
+
+      // F = U'U (Cholesky), then F^-1 v and F^-1 Z
+      F77_CALL(dpotrf)(up, &po, U_t, &po, &info, len_1);
+      if (info != 0) {
+        error("F is not positive definite at time %lld; observations with "
+              "no information are only supported by the univariate "
+              "treatment", (long long) t + 1);
+      }
+      memcpy(w_t, yc, po * sizeof(double));
+      F77_CALL(dpotrs)(up, &po, &inc, U_t, &po, w_t, &po, &info, len_1);
+      memcpy(FZ_t, Zc, po * m * sizeof(double));
+      F77_CALL(dpotrs)(up, &po, &m, U_t, &po, FZ_t, &po, &info, len_1);
+
+      // log det F = 2 sum log diag(U)
+      for (int j = 0; j < po; j++) ll_sum += 2.0 * log(U_t[(j * po) + j]);
+      ll_sum += F77_CALL(ddot)(&po, yc, &inc, w_t, &inc);
+
+      // G = F^-1 Z P = (M F^-1)'
+      F77_CALL(dsymm)(
+        rt, up, &po, &m,
+        &pos, P_t, &m, FZ_t, &po,
+        &zero, G, &po, len_1, len_1);
+
+      // Update (4.26): att = a + M F^-1 v, Ptt = P - M F^-1 M'
+      F77_CALL(dgemv)(
+        tr, &po, &m,
+        &pos, G, &po, yc, &inc,
+        &pos, att_t, &inc, len_1);
+      F77_CALL(dgemm)(
+        nt, nt, &m, &m, &po,
+        &neg, Mc, &m, G, &po,
+        &pos, Ptt_t, &m, len_1, len_2);
+
+      // Kalman gain K = T M F^-1 (4.24), kept for the smoother
+      F77_CALL(dgemm)(
+        nt, tr, &m, &po, &m,
+        &pos, T_t, &m, G, &po,
+        &zero, Kg_t, &m, len_1, len_2);
+    }
 
     // Predict (4.27)
     F77_CALL(dgemv)(
@@ -188,7 +227,7 @@ static void kfas_c(
       &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
   }
 
-  *loglik = -0.5 * ((double) n * p * LOG_2PI + ll_sum);
+  *loglik = -0.5 * ((double) n_total * LOG_2PI + ll_sum);
 
   if (!smoother && !disturbances) return;
 
@@ -214,6 +253,12 @@ static void kfas_c(
     double *r_next = r + ((t + 1) * m);
     double *N_t    = N + (t * m * m);
     double *N_next = N + ((t + 1) * m * m);
+    int *idx = obs + (t * p);
+    int po = n_obs[t];
+
+    for (int c = 0; c < m; c++) {
+      for (int j = 0; j < po; j++) Zc[j + (c * po)] = Z_t[idx[j] + (c * p)];
+    }
 
     if (disturbances) {
       // Smoothed eta disturbances (4.69)
@@ -232,58 +277,77 @@ static void kfas_c(
         &neg, qm_2, &q, qm_1, &q,
         &pos, V_eta + (t * q * q), &q, len_1, len_2);
 
-      // Smoothed epsilon disturbances (4.69): H (F^-1 v - K' r)
-      memcpy(p1, w_t, p * sizeof(double));
-      F77_CALL(dgemv)(
-        tr, &m, &p,
-        &neg, Kg_t, &m, r_next, &inc,
-        &pos, p1, &inc, len_1);
-      F77_CALL(dsymv)(
-        up, &p,
-        &pos, H_t, &p, p1, &inc,
-        &zero, epshat + (t * p), &inc, len_1);
+      // Smoothed epsilon disturbances (4.69) for all p elements, observed
+      // or not, with W selecting the observed ones:
+      //   epshat = H W' d,  d = F^-1 v - K' r
+      //   Var(eps | y) = H - H W' (F^-1 + K' N K) W H  (diagonal only)
+      if (po == 0) {
+        for (int i = 0; i < p; i++) {
+          epshat[(t * p) + i] = 0.0;
+          V_eps[(t * p) + i] = H_t[(i * p) + i];
+        }
+      } else {
+        // Hc = H W' (p x po)
+        for (int j = 0; j < po; j++) {
+          memcpy(Hc + (j * p), H_t + (idx[j] * p), p * sizeof(double));
+        }
+        memcpy(p1, w_t, po * sizeof(double));
+        F77_CALL(dgemv)(
+          tr, &m, &po,
+          &neg, Kg_t, &m, r_next, &inc,
+          &pos, p1, &inc, len_1);
+        F77_CALL(dgemv)(
+          nt, &p, &po,
+          &pos, Hc, &p, p1, &inc,
+          &zero, epshat + (t * p), &inc, len_1);
 
-      // Var(eps | y) = H - H (F^-1 + K' N K) H, diagonal only. dpotri
-      // sets the upper triangle of F^-1; mirror it to the lower.
-      memcpy(pp_1, U_t, p * p * sizeof(double));
-      F77_CALL(dpotri)(up, &p, pp_1, &p, &info, len_1);
-      for (int j = 0; j < p; j++) {
-        for (int i = j + 1; i < p; i++) pp_1[i + (j * p)] = pp_1[j + (i * p)];
-      }
-      F77_CALL(dgemm)(
-        nt, nt, &m, &p, &m,
-        &pos, N_next, &m, Kg_t, &m,
-        &zero, mp, &m, len_1, len_2);
-      F77_CALL(dgemm)(
-        tr, nt, &p, &p, &m,
-        &pos, Kg_t, &m, mp, &m,
-        &pos, pp_1, &p, len_1, len_2);
-      F77_CALL(dsymm)(
-        lf, up, &p, &p,
-        &pos, H_t, &p, pp_1, &p,
-        &zero, pp_2, &p, len_1, len_1);
-      for (int i = 0; i < p; i++) {
-        V_eps[(t * p) + i] = H_t[(i * p) + i] -
-          F77_CALL(ddot)(&p, pp_2 + i, &p, H_t + (i * p), &inc);
+        // dpotri sets the upper triangle of F^-1; mirror it to the lower
+        memcpy(pp_1, U_t, po * po * sizeof(double));
+        F77_CALL(dpotri)(up, &po, pp_1, &po, &info, len_1);
+        for (int j = 0; j < po; j++) {
+          for (int i = j + 1; i < po; i++) {
+            pp_1[i + (j * po)] = pp_1[j + (i * po)];
+          }
+        }
+        F77_CALL(dgemm)(
+          nt, nt, &m, &po, &m,
+          &pos, N_next, &m, Kg_t, &m,
+          &zero, mp, &m, len_1, len_2);
+        F77_CALL(dgemm)(
+          tr, nt, &po, &po, &m,
+          &pos, Kg_t, &m, mp, &m,
+          &pos, pp_1, &po, len_1, len_2);
+        F77_CALL(dgemm)(
+          nt, nt, &p, &po, &po,
+          &pos, Hc, &p, pp_1, &po,
+          &zero, pp_2, &p, len_1, len_2);
+        for (int i = 0; i < p; i++) {
+          V_eps[(t * p) + i] = H_t[(i * p) + i] -
+            F77_CALL(ddot)(&po, pp_2 + i, &p, Hc + i, &p);
+        }
       }
     }
 
-    // L = T - K Z
+    // L = T - K Z (L = T when nothing is observed)
     memcpy(L, T_t, m * m * sizeof(double));
-    F77_CALL(dgemm)(
-      nt, nt, &m, &m, &p,
-      &neg, Kg_t, &m, Z_t, &p,
-      &pos, L, &m, len_1, len_2);
+    if (po > 0) {
+      F77_CALL(dgemm)(
+        nt, nt, &m, &m, &po,
+        &neg, Kg_t, &m, Zc, &po,
+        &pos, L, &m, len_1, len_2);
+    }
 
     // r_t-1 = Z' F^-1 v + L' r_t (4.38)
     F77_CALL(dgemv)(
       tr, &m, &m,
       &pos, L, &m, r_next, &inc,
       &zero, r_t, &inc, len_1);
-    F77_CALL(dgemv)(
-      tr, &p, &m,
-      &pos, Z_t, &p, w_t, &inc,
-      &pos, r_t, &inc, len_1);
+    if (po > 0) {
+      F77_CALL(dgemv)(
+        tr, &po, &m,
+        &pos, Zc, &po, w_t, &inc,
+        &pos, r_t, &inc, len_1);
+    }
 
     // N_t-1 = Z' F^-1 Z + L' N_t L (4.42)
     F77_CALL(dgemm)(
@@ -294,10 +358,12 @@ static void kfas_c(
       nt, nt, &m, &m, &m,
       &pos, mm, &m, L, &m,
       &zero, N_t, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      tr, nt, &m, &m, &p,
-      &pos, Z_t, &p, FZ_t, &p,
-      &pos, N_t, &m, len_1, len_2);
+    if (po > 0) {
+      F77_CALL(dgemm)(
+        tr, nt, &m, &m, &po,
+        &pos, Zc, &po, FZ_t, &po,
+        &pos, N_t, &m, len_1, len_2);
+    }
 
     if (smoother) {
       // Smoothed state (4.39, 4.43)

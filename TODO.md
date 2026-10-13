@@ -9,12 +9,6 @@ Koopman (2012):
 
 ## Features
 
-- [ ] **Missing observations.** `NA` in `y` currently turns every later
-  output into `NA`. In the univariate treatment, skip the update for each
-  missing `y_ti`: no filter update (`K = 0`, `Finv = 0`), so the smoother
-  passes `r` and `N` through unchanged. For non-diagonal H, transform only
-  the observed sub-vector of each `y_t`.
-
 - [ ] **Exact diffuse initialisation.** Currently a diffuse initial state
   is approximated by a large `P1`, which loses precision (relative error
   around 1e-3 in `V` at t = 2 with `P1 = 1e7 I`). Implement the exact
