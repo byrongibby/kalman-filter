@@ -7,12 +7,12 @@
 mvrnorm(n, mu, sigma)
 }
 \arguments{
-\item{n}{Number of draws.}
+\item{n}{Number of draws, a positive integer.}
 
 \item{mu}{Mean vector of length \eqn{d}.}
 
-\item{sigma}{\eqn{d \times d}{d x d} positive definite covariance
-matrix.}
+\item{sigma}{\eqn{d \times d}{d x d} symmetric positive definite
+covariance matrix. An error is raised if it is not.}
 }
 \value{
 An \eqn{n \times d}{n x d} matrix, one draw per row.

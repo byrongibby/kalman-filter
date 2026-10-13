@@ -213,10 +213,10 @@ as_double <- function(x) {
 #' reproducible (on a given platform: the C++ standard does not fix the
 #' exact output of the normal distribution across standard libraries).
 #'
-#' @param n Number of draws.
+#' @param n Number of draws, a positive integer.
 #' @param mu Mean vector of length \eqn{d}.
-#' @param sigma \eqn{d \times d}{d x d} positive definite covariance
-#'   matrix.
+#' @param sigma \eqn{d \times d}{d x d} symmetric positive definite
+#'   covariance matrix. An error is raised if it is not.
 #'
 #' @return An \eqn{n \times d}{n x d} matrix, one draw per row.
 #'
@@ -229,7 +229,15 @@ as_double <- function(x) {
 #'
 #' @export
 mvrnorm <- function(n, mu, sigma) {
-  z <- .Call("mvrnorm", n, mu, sigma)
+  sigma <- as_double(sigma)
+  # Only the lower triangle is used, so an asymmetric sigma would be
+  # silently misread
+  if (is.matrix(sigma) && nrow(sigma) == ncol(sigma) &&
+      !isSymmetric(unname(sigma))) {
+    stop("sigma must be symmetric", call. = FALSE)
+  }
+
+  z <- .Call("mvrnorm", n, as_double(mu), sigma)
 
   return(t(z))
 }
