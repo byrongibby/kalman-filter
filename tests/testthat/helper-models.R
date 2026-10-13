@@ -24,6 +24,29 @@ bivariate <- function() {
        a1 = c(0, 0, 0), P1 = diag(3) * 10)
 }
 
+# Make the named system matrices time-varying: slice t is the base matrix
+# scaled by a factor that varies with t (positive for H and Q, and keeping
+# T stable)
+time_varying <- function(mod, which, n = 40) {
+  factors <- list(
+    Z = function(t) 1 + 0.5 * sin(t),
+    H = function(t) 1 + 0.8 * cos(t)^2,
+    T = function(t) 0.8 + 0.2 * cos(t),
+    R = function(t) 1 + 0.3 * sin(2 * t),
+    Q = function(t) 0.5 + sin(t / 3)^2
+  )
+  for (name in which) {
+    base <- mod[[name]]
+    mod[[name]] <- array(
+      vapply(seq_len(n), function(t) base * factors[[name]](t), base),
+      c(dim(base), n))
+  }
+  mod
+}
+
+# Slice t of a system matrix, whether time-invariant or time-varying
+at <- function(x, t) if (length(dim(x)) == 3) x[, , t] else x
+
 simulate_y <- function(mod, n = 40, seed = 1) {
   set.seed(seed)
   p <- nrow(mod$Z)
@@ -32,8 +55,10 @@ simulate_y <- function(mod, n = 40, seed = 1) {
   y <- matrix(0, n, p)
   alpha <- mod$a1 + drop(t(chol(mod$P1)) %*% rnorm(m))
   for (t in seq_len(n)) {
-    y[t, ] <- mod$Z %*% alpha + rnorm(p, sd = sqrt(diag(mod$H)))
-    alpha <- mod$T %*% alpha + mod$R %*% rnorm(q, sd = sqrt(diag(mod$Q)))
+    y[t, ] <- at(mod$Z, t) %*% alpha +
+      rnorm(p, sd = sqrt(diag(as.matrix(at(mod$H, t)))))
+    alpha <- at(mod$T, t) %*% alpha +
+      at(mod$R, t) %*% rnorm(q, sd = sqrt(diag(as.matrix(at(mod$Q, t)))))
   }
   y
 }

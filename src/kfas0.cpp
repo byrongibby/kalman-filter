@@ -9,6 +9,53 @@
 #include <R_ext/BLAS.h>
 #include <R_ext/Lapack.h>
 
+// State disturbance variance RQR' (mq is m x q scratch)
+static void compute_RQR(int m, int q, double *R, double *Q, double *mq,
+                        double *RQR) {
+  const char *tr = "t";
+  const char *nt = "n";
+  double pos = 1.0;
+  double zero = 0.0;
+  FC_LEN_T len_1 = 1;
+  FC_LEN_T len_2 = 1;
+
+  F77_CALL(dgemm)(
+    nt, nt, &m, &q, &q,
+    &pos, R, &m, Q, &q,
+    &zero, mq, &m, len_1, len_2);
+  F77_CALL(dgemm)(
+    nt, tr, &m, &m, &q,
+    &pos, mq, &m, R, &m,
+    &zero, RQR, &m, len_1, len_2);
+}
+
+// QR', used by the eta disturbance smoother
+static void compute_QR(int m, int q, double *R, double *Q, double *QR) {
+  const char *tr = "t";
+  const char *nt = "n";
+  double pos = 1.0;
+  double zero = 0.0;
+  FC_LEN_T len_1 = 1;
+  FC_LEN_T len_2 = 1;
+
+  F77_CALL(dgemm)(
+    nt, tr, &q, &m, &q,
+    &pos, Q, &q, R, &m,
+    &zero, QR, &q, len_1, len_2);
+}
+
+// System matrices may be time-invariant (one matrix) or time-varying (n
+// matrices stacked in an array). The stride is the offset between time
+// steps: 0 for time-invariant, so X + t * dX works in both cases.
+static int stride(SEXP x, int size, int n, const char *name) {
+  R_xlen_t len = XLENGTH(x);
+
+  if (len == size) return 0;
+  if (len == (R_xlen_t) size * n) return size;
+  error("%s must have %d (time-invariant) or %d (time-varying) elements, "
+        "not %lld", name, size, size * n, (long long) len);
+}
+
 static int kfas0_c(
     int n,
     int p,
@@ -20,6 +67,11 @@ static int kfas0_c(
     double *T,
     double *R,
     double *Q,
+    int dZ,
+    int dH,
+    int dT,
+    int dR,
+    int dQ,
     double *v,
     double *F,
     double *att,
@@ -63,19 +115,12 @@ static int kfas0_c(
   double *RQR  = (double *) R_alloc(m * m, sizeof(double));
   double c;
 
-  // Time-invariant state disturbance variance RQR' and QR'
-  F77_CALL(dgemm)(
-    nt, nt, &m, &q, &q,
-    &pos, R, &m, Q, &q,
-    &zero, mq, &m, len_1, len_2);
-  F77_CALL(dgemm)(
-    nt, tr, &m, &m, &q,
-    &pos, mq, &m, R, &m,
-    &zero, RQR, &m, len_1, len_2);
-  F77_CALL(dgemm)(
-    nt, tr, &q, &m, &q,
-    &pos, Q, &q, R, &m,
-    &zero, qm_1, &q, len_1, len_2);
+  // RQR' and QR' are computed once unless R or Q vary over time
+  bool varying_RQ = (dR != 0 || dQ != 0);
+  if (!varying_RQ) {
+    compute_RQR(m, q, R, Q, mq, RQR);
+    compute_QR(m, q, R, Q, qm_1);
+  }
 
   if (filter) {
     // Initialise v = y
@@ -83,22 +128,26 @@ static int kfas0_c(
     
     // Filter
     for (int t = 0; t < n; t++) {
+      double *Z_t = Z + (t * dZ);
+      double *H_t = H + (t * dH);
+      double *T_t = T + (t * dT);
+
       memcpy(att + (t * m), a + (t * m), m * sizeof(double));
       memcpy(Ptt + (t * m * m), P + (t * m * m), m * m * sizeof(double));
       
       for (int i = 0; i < p; i++) {
         // Innovation (6.13)
         v[(t * p) + i] -= F77_CALL(ddot)(
-          &m, Z + i, &p, att + (t * m), &inc);
-        F[(t * p) + i] = H[(i * p) + i];
+          &m, Z_t + i, &p, att + (t * m), &inc);
+        F[(t * p) + i] = H_t[(i * p) + i];
 
         // M = Ptt Z_i' (stored in K), F = H_i + Z_i M
         F77_CALL(dsymv)(
           up, &m,
-          &pos, Ptt + (t * m * m), &m, Z + i, &p,
+          &pos, Ptt + (t * m * m), &m, Z_t + i, &p,
           &zero, K + (t * m * p) + (i * m), &inc, len_1);
         F[(t * p) + i] += F77_CALL(ddot)(
-          &m, K + (t * m * p) + (i * m), &inc, Z + i, &p);
+          &m, K + (t * m * p) + (i * m), &inc, Z_t + i, &p);
 
         // K matrix (6.13), K = M / F
         Finv[(t * p) + i] = 1.0 / F[(t * p) + i];
@@ -119,16 +168,17 @@ static int kfas0_c(
       // Predict state (6.14)
       F77_CALL(dgemv)(
         nt, &m, &m,
-        &pos, T, &m, att + (t * m), &inc,
+        &pos, T_t, &m, att + (t * m), &inc,
         &zero, a + ((t + 1) * m), &inc, len_1);
+      if (varying_RQ) compute_RQR(m, q, R + (t * dR), Q + (t * dQ), mq, RQR);
       memcpy(P + ((t + 1) * m * m), RQR, m * m * sizeof(double));
       F77_CALL(dgemm)(
         nt, nt, &m, &m, &m,
-        &pos, T, &m, Ptt + (t * m * m), &m,
+        &pos, T_t, &m, Ptt + (t * m * m), &m,
         &zero, mm, &m, len_1, len_2);
       F77_CALL(dgemm)(
         nt, tr, &m, &m, &m,
-        &pos, mm, &m, T, &m,
+        &pos, mm, &m, T_t, &m,
         &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
     }
   }
@@ -140,23 +190,29 @@ static int kfas0_c(
 
     // Smooth
     for (int t = n - 1; t >= 0; t--) {
+      double *Z_t = Z + (t * dZ);
+      double *H_t = H + (t * dH);
+      double *T_t = T + (t * dT);
+      double *Q_t = Q + (t * dQ);
+
       // Previous weighted sum of innovations (6.15.2)
       F77_CALL(dgemv)(
           tr, &m, &m,
-          &pos, T, &m, r + ((t + 1) * m), &inc,
+          &pos, T_t, &m, r + ((t + 1) * m), &inc,
           &zero, r + (t * m), &inc, len_1);
       F77_CALL(dgemm)(
           tr, nt, &m, &m, &m,
-          &pos, T, &m, N + ((t + 1) * m * m), &m,
+          &pos, T_t, &m, N + ((t + 1) * m * m), &m,
           &zero, mm, &m, len_1, len_2);
       F77_CALL(dgemm)(
           nt, nt, &m, &m, &m,
-          &pos, mm, &m, T, &m,
+          &pos, mm, &m, T_t, &m,
           &zero, N + (t * m * m), &m, len_1, len_2);
 
       if (disturbances) {
         // Smoothed eta disturbances (4.69)
-        memcpy(V_eta + (t * q * q), Q, q * q * sizeof(double));
+        if (varying_RQ) compute_QR(m, q, R + (t * dR), Q_t, qm_1);
+        memcpy(V_eta + (t * q * q), Q_t, q * q * sizeof(double));
         F77_CALL(dgemv)(
           nt, &q, &m,
           &pos, qm_1, &q, r + ((t + 1) * m), &inc,
@@ -187,26 +243,26 @@ static int kfas0_c(
         if (disturbances) {
           // Smoothed epsilon disturbances
           epshat[(t * p) + i] =
-            H[(i * p) + i] * (Finv[(t * p) + i] * v[(t * p) + i] - Kr);
-          V_eps[(t * p) + i] = H[(i * p) + i] -
-            H[(i * p) + i] * H[(i * p) + i] * (Finv[(t * p) + i] + s);
+            H_t[(i * p) + i] * (Finv[(t * p) + i] * v[(t * p) + i] - Kr);
+          V_eps[(t * p) + i] = H_t[(i * p) + i] -
+            H_t[(i * p) + i] * H_t[(i * p) + i] * (Finv[(t * p) + i] + s);
         }
 
         // Weighted sum of innovations (6.15.1)
         c = Finv[(t * p) + i] * v[(t * p) + i] - Kr;
-        F77_CALL(daxpy)(&m, &c, Z + i, &p, r + (t * m), &inc);
+        F77_CALL(daxpy)(&m, &c, Z_t + i, &p, r + (t * m), &inc);
         F77_CALL(dger)(
           &m, &m,
-          &neg, Z + i, &p, m1, &inc,
+          &neg, Z_t + i, &p, m1, &inc,
           N + (t * m * m), &m);
         F77_CALL(dger)(
           &m, &m,
-          &neg, m1, &inc, Z + i, &p,
+          &neg, m1, &inc, Z_t + i, &p,
           N + (t * m * m), &m);
         c = s + Finv[(t * p) + i];
         F77_CALL(dger)(
           &m, &m,
-          &c, Z + i, &p, Z + i, &p,
+          &c, Z_t + i, &p, Z_t + i, &p,
           N + (t * m * m), &m);
       }
 
@@ -248,6 +304,12 @@ extern "C" SEXP kfas0(
   int n = INTEGER(dim_y)[1];
   int m = INTEGER(dim_R)[0];
   int q = INTEGER(dim_R)[1];
+
+  int dZ = stride(Z, p * m, n, "Z");
+  int dH = stride(H, p * p, n, "H");
+  int dT = stride(T, m * m, n, "T");
+  int dR = stride(R, m * q, n, "R");
+  int dQ = stride(Q, q * q, n, "Q");
 
   SEXP v        = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP F        = PROTECT(allocMatrix(REALSXP, p    , n));
@@ -310,6 +372,11 @@ extern "C" SEXP kfas0(
     T_ptr,
     R_ptr,
     Q_ptr,
+    dZ,
+    dH,
+    dT,
+    dR,
+    dQ,
     v_ptr,
     F_ptr,
     att_ptr,
