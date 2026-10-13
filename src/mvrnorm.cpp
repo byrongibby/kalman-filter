@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <Rinternals.h>
@@ -21,14 +22,14 @@ static uint64_t seed_from_r(void) {
 }
 
 // Standard normal draws
-static void rnorm(std::mt19937_64 *rng, double *z, int n) {
+static void rnorm(std::mt19937_64 *rng, double *z, ptrdiff_t n) {
   assert(rng);
   assert(z);
   assert(n > 0);
 
   std::normal_distribution<double> norm(0.0, 1.0);
 
-  for (int i = 0; i < n; i++) z[i] = norm(*rng);
+  for (ptrdiff_t i = 0; i < n; i++) z[i] = norm(*rng);
 }
 
 int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
@@ -50,12 +51,12 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
   FC_LEN_T len_1 = 1; 
   FC_LEN_T len_2 = 1;
 
-  double *z = (double *) R_alloc(d * n, sizeof(double));
+  double *z = (double *) R_alloc((size_t) d * n, sizeof(double));
   double *C = (double *) R_alloc(d * d, sizeof(double));
 
-  rnorm(&rng, z, d * n);
+  rnorm(&rng, z, (ptrdiff_t) d * n);
 
-  for (int i = 0; i < n; i++) memcpy(x + i * d, mu, d * sizeof(double));
+  for (ptrdiff_t i = 0; i < n; i++) memcpy(x + i * d, mu, d * sizeof(double));
   memcpy(C, sigma, d * d * sizeof(double));
 
   F77_CALL(dpotrf)(

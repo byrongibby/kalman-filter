@@ -4,6 +4,7 @@
 #include <float.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <Rinternals.h>
@@ -53,8 +54,9 @@ static int stride(SEXP x, int size, int n, const char *name) {
 
   if (len == size) return 0;
   if (len == (R_xlen_t) size * n) return size;
-  error("%s must have %d (time-invariant) or %d (time-varying) elements, "
-        "not %lld", name, size, size * n, (long long) len);
+  error("%s must have %d (time-invariant) or %lld (time-varying) "
+        "elements, not %lld", name, size, (long long) size * n,
+        (long long) len);
 }
 
 // Error unless x is a double vector of the given length
@@ -80,7 +82,7 @@ static void fill_na(double *x, R_xlen_t len) {
 
 // True if every one of the nH p x p slices of H is diagonal
 static bool is_diagonal(double *H, int p, int nH) {
-  for (int k = 0; k < nH; k++)
+  for (ptrdiff_t k = 0; k < nH; k++)
     for (int j = 0; j < p; j++)
       for (int i = 0; i < p; i++)
         if (i != j && H[(k * p * p) + (j * p) + i] != 0.0) return false;
@@ -95,10 +97,12 @@ static void cholesky(double *H, int p, int nH, double *L) {
   int info;
   FC_LEN_T len_1 = 1;
 
-  memcpy(L, H, p * p * nH * sizeof(double));
-  for (int k = 0; k < nH; k++) {
+  memcpy(L, H, (size_t) p * p * nH * sizeof(double));
+  for (ptrdiff_t k = 0; k < nH; k++) {
     F77_CALL(dpotrf)(lo, &p, L + (k * p * p), &p, &info, len_1);
-    if (info != 0) error("H is not positive definite at time %d", k + 1);
+    if (info != 0) {
+      error("H is not positive definite at time %lld", (long long) k + 1);
+    }
   }
 }
 
@@ -151,7 +155,7 @@ static void kfas0_c(
 
   // Temporary storage for intermediate results
   // (R_alloc memory is reclaimed by R when the .Call returns)
-  double *Finv = (double *) R_alloc(n * p, sizeof(double));
+  double *Finv = (double *) R_alloc((size_t) n * p, sizeof(double));
   double *m1   = (double *) R_alloc(m,     sizeof(double));
   double *mq   = (double *) R_alloc(m * q, sizeof(double));
   double *mm   = (double *) R_alloc(m * m, sizeof(double));
@@ -168,10 +172,10 @@ static void kfas0_c(
   }
 
   // Initialise v = y
-  memcpy(v, y, n * p * sizeof(double));
+  memcpy(v, y, (size_t) n * p * sizeof(double));
   
   // Filter
-  for (int t = 0; t < n; t++) {
+  for (ptrdiff_t t = 0; t < n; t++) {
     double *Z_t = Z + (t * dZ);
     double *H_t = H + (t * dH);
     double *T_t = T + (t * dT);
@@ -243,12 +247,12 @@ static void kfas0_c(
   if (smoother || disturbances) {
     if (smoother) {
       // Initialise alphahat = a, and V = P
-      memcpy(alphahat, a, n * m * sizeof(double));
-      memcpy(V, P, n * m * m * sizeof(double));
+      memcpy(alphahat, a, (size_t) n * m * sizeof(double));
+      memcpy(V, P, (size_t) n * m * m * sizeof(double));
     }
 
     // Smooth
-    for (int t = n - 1; t >= 0; t--) {
+    for (ptrdiff_t t = n - 1; t >= 0; t--) {
       double *Z_t = Z + (t * dZ);
       double *H_t = H + (t * dH);
       double *T_t = T + (t * dT);
@@ -429,8 +433,8 @@ extern "C" SEXP kfas0(
   memcpy(a_ptr, a1_ptr, m * sizeof(double));
   memcpy(P_ptr, P1_ptr, m * m * sizeof(double));
 
-  memset(r_ptr + (n * m), 0, m * sizeof(double));
-  memset(N_ptr + (n * m * m), 0, m * m * sizeof(double));
+  memset(r_ptr + ((ptrdiff_t) n * m), 0, m * sizeof(double));
+  memset(N_ptr + ((ptrdiff_t) n * m * m), 0, m * m * sizeof(double));
 
   // Scalars required for BLAS routines
   const char *lf = "l";
@@ -455,12 +459,12 @@ extern "C" SEXP kfas0(
   bool diagonal = is_diagonal(H_ptr, p, dH ? n : 1);
 
   if (!diagonal) {
-    L = (double *) R_alloc(p * p * (dH ? n : 1), sizeof(double));
+    L = (double *) R_alloc((size_t) p * p * (dH ? n : 1), sizeof(double));
     cholesky(H_ptr, p, dH ? n : 1, L);
 
-    y_in = (double *) R_alloc(n * p, sizeof(double));
-    memcpy(y_in, y_ptr, n * p * sizeof(double));
-    for (int t = 0; t < n; t++) {
+    y_in = (double *) R_alloc((size_t) n * p, sizeof(double));
+    memcpy(y_in, y_ptr, (size_t) n * p * sizeof(double));
+    for (ptrdiff_t t = 0; t < n; t++) {
       F77_CALL(dtrsv)(
         lo, nt, nu, &p,
         L + (t * dL), &p, y_in + (t * p), &inc, len_1, len_1, len_1);
@@ -469,8 +473,8 @@ extern "C" SEXP kfas0(
     // Z* varies over time if either Z or H does
     dZ_in = (dZ != 0 || dH != 0) ? p * m : 0;
     int nZ = dZ_in ? n : 1;
-    Z_in = (double *) R_alloc(p * m * nZ, sizeof(double));
-    for (int k = 0; k < nZ; k++) {
+    Z_in = (double *) R_alloc((size_t) p * m * nZ, sizeof(double));
+    for (ptrdiff_t k = 0; k < nZ; k++) {
       memcpy(Z_in + (k * p * m), Z_ptr + (k * dZ), p * m * sizeof(double));
       F77_CALL(dtrsm)(
         lf, lo, nt, nu, &p, &m,
@@ -526,7 +530,7 @@ extern "C" SEXP kfas0(
     // epshat = L epshat* (= y - Z alphahat) and Var(eps | y) = Z V Z'
     // (diagonal only). v, F and K stay in the transformed scale.
     double *m1 = (double *) R_alloc(m, sizeof(double));
-    for (int t = 0; t < n; t++) {
+    for (ptrdiff_t t = 0; t < n; t++) {
       double *Z_t = Z_ptr + (t * dZ);
 
       F77_CALL(dtrmv)(
