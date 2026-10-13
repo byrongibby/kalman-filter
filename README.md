@@ -31,7 +31,10 @@ Two functions draw the states from their joint posterior distribution:
 - `precision_sampler()` uses the precision-based sampler of Chan &
   Jeliazkov (2009), which factors the banded posterior precision of all
   the states at once. It is faster, but needs non-singular state
-  disturbance and observation variances.
+  disturbance and observation variances. It can also restrict the draws to
+  linear equality constraints on the states (for example temporal
+  aggregation to known totals), with the hyperplane-truncation algorithm
+  of Cong, Chen & Zhou (2017).
 
 `mvrnorm()` draws from a multivariate normal distribution.
 
@@ -77,3 +80,7 @@ Chan, J. C. C. and Jeliazkov, I. (2009). Efficient simulation and
 integrated likelihood estimation in state space models. *International
 Journal of Mathematical Modelling and Numerical Optimisation*, 1(1/2),
 101-120.
+
+Cong, Y., Chen, B. and Zhou, M. (2017). Fast simulation of
+hyperplane-truncated multivariate normal distributions. *Bayesian
+Analysis*, 12(4), 1017-1037.

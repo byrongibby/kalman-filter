@@ -16,7 +16,9 @@ precision_sampler(
   initpinf = NULL,
   obsint = NULL,
   stateint = NULL,
-  nsim = 1
+  nsim = 1,
+  constraints = NULL,
+  rhs = NULL
 )
 }
 \arguments{
@@ -60,6 +62,14 @@ entering \eqn{\alpha_{t+1}}{alpha[t+1]}. \code{NULL} (the default) for
 none.}
 
 \item{nsim}{Number of draws, a positive integer.}
+
+\item{constraints}{Linear constraints on the states: a
+\eqn{k \times n m}{k x nm} matrix (or a \eqn{k \times n \times m}{k x
+  n x m} array, or a vector of length \eqn{n m} for one constraint).
+\code{NULL} (the default) for none. See the Linear constraints section.}
+
+\item{rhs}{Right-hand side \eqn{r} of the constraints, a
+length-\eqn{k} vector. Zero if \code{NULL}.}
 }
 \value{
 A list with elements
@@ -68,7 +78,8 @@ A list with elements
 \code{draws[, , s]} is one draw of the states, laid out like \code{alphahat}
 in \code{\link[=kfas]{kfas()}}.}
 \item{\code{mean}}{\eqn{n \times m}{n x m} posterior mean
-\eqn{E(\alpha_t | y)}, equal to \code{alphahat} from \code{\link[=kfas]{kfas()}}.}
+\eqn{E(\alpha_t | y)}, equal to \code{alphahat} from \code{\link[=kfas]{kfas()}} (with
+constraints, the mean conditional on them).}
 }
 }
 \description{
@@ -106,6 +117,26 @@ posterior that \code{\link[=kfas]{kfas()}} smooths with a diffuse initial state.
 
 For models outside these conditions use the Kalman filter based
 smoother in \code{\link[=kfas]{kfas()}} for the posterior mean and variances.
+}
+
+\section{Linear constraints}{
+
+\code{constraints} and \code{rhs} restrict the draws to the hyperplane
+\eqn{A \alpha = r}{A alpha = r}, for example states that sum to zero
+or quarterly states that add up to known annual totals. The draws then
+come exactly from the posterior conditional on the constraints, using
+algorithm 2 of Cong, Chen and Zhou (2017): each unconstrained draw
+\eqn{x} is corrected to
+\eqn{x + K^{-1} A' (A K^{-1} A')^{-1} (r - A x)}{x + K^-1 A' (A K^-1
+A')^-1 (r - A x)}. The \eqn{k} solves with the banded \eqn{K} are done
+once, so each draw costs an extra \eqn{O(n m k)} operations. \code{mean} is
+then the conditional posterior mean.
+
+Row \eqn{j} of \code{constraints} holds the coefficients of constraint
+\eqn{j} on \code{as.vector(alpha)}, where \code{alpha} is the \eqn{n \times m}{n
+x m} matrix of states laid out like \code{alphahat}, so that
+\code{constraints \%*\% as.vector(sim$draws[, , s])} equals \code{rhs}. The
+constraints must be linearly independent.
 
 Draws use a 64-bit Mersenne Twister seeded from R's random number
 generator, as in \code{\link[=mvrnorm]{mvrnorm()}}, so \code{\link[=set.seed]{set.seed()}} makes them reproducible.
@@ -122,10 +153,24 @@ plot(as.numeric(Nile), ylab = "Flow")
 matlines(sim$draws[, 1, 1:10], col = "grey", lty = 1)
 lines(sim$mean[, 1])
 
+# The same, constrained so that the level averages 900 over each decade
+n <- nrow(y)
+decades <- split(seq_len(n), (seq_len(n) - 1) \%/\% 10)
+A <- t(sapply(decades, function(i) as.numeric(seq_len(n) \%in\% i) / 10))
+sim_c <- precision_sampler(y, matrix(1), matrix(15099), matrix(1),
+                           matrix(1), matrix(1469.1), 0, matrix(0),
+                           matrix(1), nsim = 100, constraints = A,
+                           rhs = rep(900, nrow(A)))
+range(A \%*\% sim_c$draws[, 1, ])
+
 }
 \references{
 Chan, J. C. C. and Jeliazkov, I. (2009). Efficient
 simulation and integrated likelihood estimation in state space models.
 \emph{International Journal of Mathematical Modelling and Numerical
 Optimisation}, 1(1/2), 101--120.
+
+Cong, Y., Chen, B. and Zhou, M. (2017). Fast simulation of
+hyperplane-truncated multivariate normal distributions. \emph{Bayesian
+Analysis}, 12(4), 1017--1037.
 }

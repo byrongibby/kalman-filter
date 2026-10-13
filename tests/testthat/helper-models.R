@@ -136,7 +136,8 @@ expect_same_values <- function(object, expected, tolerance = 1e-8) {
 
 # Exact smoothed quantities and log-likelihood from the joint normal
 # distribution of the stacked model, conditioning on the observed (non-NA)
-# elements of y only. alpha_t = A_t xi with xi = (alpha_1, eta_1, ...,
+# elements of y only. stacked_mean and stacked_var are the posterior of
+# as.vector(alpha), with alpha the n x m matrix of states. alpha_t = A_t xi with xi = (alpha_1, eta_1, ...,
 # eta_n-1), so y = B xi + eps with eps independent of xi.
 exact_posterior <- function(mod, y) {
   n <- nrow(y)
@@ -183,7 +184,13 @@ exact_posterior <- function(mod, y) {
 
   # eta_n is independent of y: its posterior is the prior
   Q_n <- at(mod$Q, n)
+
+  # Rows of the stacked A_t reordered from state fastest to time fastest
+  ord <- as.vector(t(matrix(seq_len(n * m), m, n)))
+  A_all <- do.call(rbind, A)[ord, , drop = FALSE]
   list(
+    stacked_mean = drop(A_all %*% post_mean),
+    stacked_var = A_all %*% post_var %*% t(A_all),
     alphahat = matrix(unlist(lapply(A, function(At) At %*% post_mean)),
                       n, m, byrow = TRUE),
     V = array(sapply(A, function(At) At %*% post_var %*% t(At)), c(m, m, n)),

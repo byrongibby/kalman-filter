@@ -439,11 +439,35 @@ mvrnorm <- function(n, mu, sigma) {
 #' For models outside these conditions use the Kalman filter based
 #' smoother in [kfas()] for the posterior mean and variances.
 #'
+#' @section Linear constraints:
+#' `constraints` and `rhs` restrict the draws to the hyperplane
+#' \eqn{A \alpha = r}{A alpha = r}, for example states that sum to zero
+#' or quarterly states that add up to known annual totals. The draws then
+#' come exactly from the posterior conditional on the constraints, using
+#' algorithm 2 of Cong, Chen and Zhou (2017): each unconstrained draw
+#' \eqn{x} is corrected to
+#' \eqn{x + K^{-1} A' (A K^{-1} A')^{-1} (r - A x)}{x + K^-1 A' (A K^-1
+#' A')^-1 (r - A x)}. The \eqn{k} solves with the banded \eqn{K} are done
+#' once, so each draw costs an extra \eqn{O(n m k)} operations. `mean` is
+#' then the conditional posterior mean.
+#'
+#' Row \eqn{j} of `constraints` holds the coefficients of constraint
+#' \eqn{j} on `as.vector(alpha)`, where `alpha` is the \eqn{n \times m}{n
+#' x m} matrix of states laid out like `alphahat`, so that
+#' `constraints %*% as.vector(sim$draws[, , s])` equals `rhs`. The
+#' constraints must be linearly independent.
+#'
 #' Draws use a 64-bit Mersenne Twister seeded from R's random number
 #' generator, as in [mvrnorm()], so [set.seed()] makes them reproducible.
 #'
 #' @inheritParams kfas
 #' @param nsim Number of draws, a positive integer.
+#' @param constraints Linear constraints on the states: a
+#'   \eqn{k \times n m}{k x nm} matrix (or a \eqn{k \times n \times m}{k x
+#'   n x m} array, or a vector of length \eqn{n m} for one constraint).
+#'   `NULL` (the default) for none. See the Linear constraints section.
+#' @param rhs Right-hand side \eqn{r} of the constraints, a
+#'   length-\eqn{k} vector. Zero if `NULL`.
 #'
 #' @return A list with elements
 #' \describe{
@@ -451,13 +475,18 @@ mvrnorm <- function(n, mu, sigma) {
 #'     `draws[, , s]` is one draw of the states, laid out like `alphahat`
 #'     in [kfas()].}
 #'   \item{`mean`}{\eqn{n \times m}{n x m} posterior mean
-#'     \eqn{E(\alpha_t | y)}, equal to `alphahat` from [kfas()].}
+#'     \eqn{E(\alpha_t | y)}, equal to `alphahat` from [kfas()] (with
+#'     constraints, the mean conditional on them).}
 #' }
 #'
 #' @references Chan, J. C. C. and Jeliazkov, I. (2009). Efficient
 #'   simulation and integrated likelihood estimation in state space models.
 #'   *International Journal of Mathematical Modelling and Numerical
 #'   Optimisation*, 1(1/2), 101--120.
+#'
+#'   Cong, Y., Chen, B. and Zhou, M. (2017). Fast simulation of
+#'   hyperplane-truncated multivariate normal distributions. *Bayesian
+#'   Analysis*, 12(4), 1017--1037.
 #'
 #' @examples
 #' # Draws of the level of the Nile, with a diffuse initial level
@@ -469,6 +498,16 @@ mvrnorm <- function(n, mu, sigma) {
 #' plot(as.numeric(Nile), ylab = "Flow")
 #' matlines(sim$draws[, 1, 1:10], col = "grey", lty = 1)
 #' lines(sim$mean[, 1])
+#'
+#' # The same, constrained so that the level averages 900 over each decade
+#' n <- nrow(y)
+#' decades <- split(seq_len(n), (seq_len(n) - 1) %/% 10)
+#' A <- t(sapply(decades, function(i) as.numeric(seq_len(n) %in% i) / 10))
+#' sim_c <- precision_sampler(y, matrix(1), matrix(15099), matrix(1),
+#'                            matrix(1), matrix(1469.1), 0, matrix(0),
+#'                            matrix(1), nsim = 100, constraints = A,
+#'                            rhs = rep(900, nrow(A)))
+#' range(A %*% sim_c$draws[, 1, ])
 #'
 #' @export
 precision_sampler <- function(
@@ -483,10 +522,35 @@ precision_sampler <- function(
   initpinf = NULL,
   obsint = NULL,
   stateint = NULL,
-  nsim = 1
+  nsim = 1,
+  constraints = NULL,
+  rhs = NULL
 ) {
   if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
   if (is.null(initpinf)) initpinf <- diffuse_none(vartrans)
+
+  # Constraints on as.vector(alpha) (time fastest) are reordered to the
+  # stacked states of the C code (state fastest)
+  if (is.null(constraints) && !is.null(rhs)) {
+    stop("rhs is given without constraints", call. = FALSE)
+  }
+  if (!is.null(constraints)) {
+    constraints <- as_double(constraints)
+    n <- nrow(obs)
+    m <- if (is.null(dim(vartrans))) 1 else dim(vartrans)[1]
+    if (length(constraints) %% (n * m) != 0) {
+      stop("constraints must have n * m = ", n * m, " columns",
+           call. = FALSE)
+    }
+    k <- length(constraints) / (n * m)
+    constraints <- matrix(aperm(array(constraints, c(k, n, m)), c(1, 3, 2)),
+                          k)
+    rhs <- if (is.null(rhs)) rep(0, k) else as_double(rhs)
+    if (length(rhs) != k) {
+      stop("rhs must have one element per constraint (", k, ")",
+           call. = FALSE)
+    }
+  }
 
   x <- .Call(
     "precision_sampler",
@@ -501,7 +565,9 @@ precision_sampler <- function(
     as_double(initpinf),
     intercept(obsint),
     intercept(stateint),
-    nsim
+    nsim,
+    constraints,
+    rhs
   )
 
   list(draws = aperm(x[[1]], c(2, 1, 3)), mean = t(x[[2]]))

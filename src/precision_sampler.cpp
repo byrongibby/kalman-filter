@@ -28,12 +28,12 @@ static void add_block(double *AB, int ldab, int m, ptrdiff_t bi,
   }
 }
 
-// Inverse of a symmetric positive definite m x m matrix, in place (both
-// triangles). Returns false if A is not positive definite, including when
-// it is singular but rounding leaves a tiny positive Cholesky pivot: each
-// squared pivot (a conditional variance) must exceed rounding error
-// relative to the largest diagonal element.
-static bool spd_inverse(double *A, int m) {
+// Lower Cholesky factor of a symmetric positive definite m x m matrix, in
+// place. Returns false if A is not positive definite, including when it is
+// singular but rounding leaves a tiny positive pivot: each squared pivot (a
+// conditional variance) must exceed rounding error relative to the largest
+// diagonal element.
+static bool spd_cholesky(double *A, int m) {
   const char *lo = "l";
   int info;
   FC_LEN_T len_1 = 1;
@@ -48,6 +48,19 @@ static bool spd_inverse(double *A, int m) {
     double pivot = A[(j * m) + j];
     if (pivot * pivot <= 100.0 * m * DBL_EPSILON * scale) return false;
   }
+
+  return true;
+}
+
+// Inverse of a symmetric positive definite m x m matrix, in place (both
+// triangles). Returns false if A is not positive definite (see
+// spd_cholesky).
+static bool spd_inverse(double *A, int m) {
+  const char *lo = "l";
+  int info;
+  FC_LEN_T len_1 = 1;
+
+  if (!spd_cholesky(A, m)) return false;
   F77_CALL(dpotri)(lo, &m, A, &m, &info, len_1);
   if (info != 0) return false;
   for (int c = 0; c < m; c++) {
@@ -55,6 +68,21 @@ static bool spd_inverse(double *A, int m) {
   }
 
   return true;
+}
+
+// x += Dt' (r - A x), with A and Dt k x N; e (k) is scratch
+static void constrain(int N, int k, double *A, double *Dt, double *r,
+                      double *e, double *x) {
+  const char *tr = "t";
+  const char *nt = "n";
+  int inc = 1;
+  double pos = 1.0;
+  double neg = -1.0;
+  FC_LEN_T len_1 = 1;
+
+  memcpy(e, r, k * sizeof(double));
+  F77_CALL(dgemv)(nt, &k, &N, &neg, A, &k, x, &inc, &pos, e, &inc, len_1);
+  F77_CALL(dgemv)(tr, &k, &N, &pos, Dt, &k, e, &inc, &pos, x, &inc, len_1);
 }
 
 // Prior precision of alpha_1 ~ N(a1, P1 + kappa P1inf) as kappa -> infinity:
@@ -134,9 +162,16 @@ static void initial_precision(int m, double *P1, double *P1inf,
 //   K mu = G' S^-1 b + (Z_t' H_t^-1 (y_t - d_t))_t
 // K is block tridiagonal, a band matrix with bandwidth 2m - 1, so
 // K = L L' (banded Cholesky) costs O(n m^3), mu follows from two banded
-// triangular solves, and alpha = mu + L'^-1 z with z ~ N(0, I) is a draw. Missing observations
-// drop out of the sum; non-diagonal H uses the transformed model with
-// H* = I.
+// triangular solves, and alpha = mu + L'^-1 z with z ~ N(0, I) is a draw.
+// Missing observations drop out of the sum; non-diagonal H uses the
+// transformed model with H* = I.
+//
+// Optional linear constraints A alpha = r (k x N, k < N) truncate the
+// posterior to a hyperplane, using algorithm 2 of Cong, Chen and Zhou
+// (2017): with B = K^-1 A' and C = A B = A K^-1 A', each unconstrained
+// draw x becomes x + B C^-1 (r - A x), an exact draw from the posterior
+// conditional on A alpha = r, and the mean becomes the conditional mean.
+// B costs k banded solves, once; each draw then costs O(N k).
 extern "C" SEXP precision_sampler(
     SEXP y,
     SEXP Z,
@@ -149,7 +184,9 @@ extern "C" SEXP precision_sampler(
     SEXP P1inf,
     SEXP dvec,
     SEXP cvec,
-    SEXP nsim
+    SEXP nsim,
+    SEXP Amat,
+    SEXP rvec
 ) {
   model_dims d = check_model(y, Z, H, T, R, Q, a1, P1, P1inf, dvec, cvec);
   int n = d.n;
@@ -164,6 +201,18 @@ extern "C" SEXP precision_sampler(
   int ns = asInteger(nsim);
   if (ns == NA_INTEGER || ns < 1) error("nsim must be a positive integer");
   if ((double) n * m > INT_MAX) error("n * m is too large");
+
+  // Constraints A alpha = r, if given: A is k x N with the columns in the
+  // order of the stacked states (state fastest)
+  int k = 0;
+  if (!isNull(Amat)) {
+    check_double(rvec, -1, "rhs");
+    if (XLENGTH(rvec) < 1 || XLENGTH(rvec) >= (R_xlen_t) n * m) {
+      error("there must be between 1 and n * m - 1 constraints");
+    }
+    k = (int) XLENGTH(rvec);
+    check_double(Amat, (R_xlen_t) k * n * m, "constraints");
+  }
 
   // Scalars required for BLAS/LAPACK routines
   const char *tr = "t";
@@ -312,7 +361,46 @@ extern "C" SEXP precision_sampler(
   memcpy(mean_ptr, lin, (size_t) N * sizeof(double));
   F77_CALL(dpbtrs)(lo, &N, &kd, &inc, AB, &ldab, mean_ptr, &N, &info, len_1);
 
-  // Draws: alpha = mu + L'^-1 z, so Var(alpha) = (L L')^-1 = K^-1
+  // Hyperplane truncation: Dt = C^-1 B' (k x N), so that the correction
+  // of x is Dt' (r - A x)
+  double *A_ptr = NULL;
+  double *r_ptr = NULL;
+  double *Dt = NULL;
+  double *e = NULL;
+  if (k > 0) {
+    A_ptr = REAL(Amat);
+    r_ptr = REAL(rvec);
+    double *B = (double *) R_alloc((size_t) N * k, sizeof(double));
+    double *C = (double *) R_alloc((size_t) k * k, sizeof(double));
+    Dt = (double *) R_alloc((size_t) k * N, sizeof(double));
+    e  = (double *) R_alloc(k, sizeof(double));
+
+    // B = K^-1 A'
+    for (int j = 0; j < k; j++) {
+      for (ptrdiff_t c = 0; c < N; c++) B[c + (j * N)] = A_ptr[j + (c * k)];
+    }
+    F77_CALL(dpbtrs)(lo, &N, &kd, &k, AB, &ldab, B, &N, &info, len_1);
+
+    // C = A B, factored
+    F77_CALL(dgemm)(
+      nt, nt, &k, &k, &N,
+      &pos, A_ptr, &k, B, &N,
+      &zero, C, &k, len_1, len_2);
+    if (!spd_cholesky(C, k)) {
+      error("the constraints must be linearly independent");
+    }
+
+    // Dt = C^-1 B'
+    for (int j = 0; j < k; j++) {
+      for (ptrdiff_t c = 0; c < N; c++) Dt[j + (c * k)] = B[c + (j * N)];
+    }
+    F77_CALL(dpotrs)(lo, &k, &N, C, &k, Dt, &k, &info, len_1);
+
+    constrain(N, k, A_ptr, Dt, r_ptr, e, mean_ptr);
+  }
+
+  // Draws: alpha = mu + L'^-1 z, so Var(alpha) = (L L')^-1 = K^-1, then
+  // projected onto the constraints
   rnorm_seeded(draws_ptr, (ptrdiff_t) N * ns);
   for (ptrdiff_t s = 0; s < ns; s++) {
     double *x = draws_ptr + (s * N);
@@ -320,6 +408,7 @@ extern "C" SEXP precision_sampler(
       lo, tr, nu, &N, &kd,
       AB, &ldab, x, &inc, len_1, len_1, len_1);
     F77_CALL(daxpy)(&N, &pos, mean_ptr, &inc, x, &inc);
+    if (k > 0) constrain(N, k, A_ptr, Dt, r_ptr, e, x);
   }
 
   SET_VECTOR_ELT(result, 0, draws);
