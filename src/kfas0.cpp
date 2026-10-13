@@ -60,11 +60,26 @@ static int kfas0_c(
   double *mm   = (double *) R_alloc(m * m, sizeof(double));
   double *qm_1 = (double *) R_alloc(q * m, sizeof(double));
   double *qm_2 = mq;
+  double *RQR  = (double *) R_alloc(m * m, sizeof(double));
   double c;
 
   // Create mxm identity matrix (S_alloc zero-fills)
   double *Ident = (double *) S_alloc(m * m, sizeof(double));
   for (int i = 0; i < m; i++) Ident[(i * m) + i] = 1.0;
+
+  // Time-invariant state disturbance variance RQR' and QR'
+  F77_CALL(dgemm)(
+    nt, nt, &m, &q, &q,
+    &pos, R, &m, Q, &q,
+    &zero, mq, &m, len_1, len_2);
+  F77_CALL(dgemm)(
+    nt, tr, &m, &m, &q,
+    &pos, mq, &m, R, &m,
+    &zero, RQR, &m, len_1, len_2);
+  F77_CALL(dgemm)(
+    nt, tr, &q, &m, &q,
+    &pos, Q, &q, R, &m,
+    &zero, qm_1, &q, len_1, len_2);
 
   if (filter) {
     // Initialise v = y
@@ -115,14 +130,7 @@ static int kfas0_c(
         nt, &m, &m,
         &pos, T, &m, att + (t * m), &inc,
         &zero, a + ((t + 1) * m), &inc, len_1);
-      F77_CALL(dgemm)(
-        nt, nt, &m, &q, &q,
-        &pos, R, &m, Q, &q,
-        &zero, mq, &m, len_1, len_2);
-      F77_CALL(dgemm)(
-        nt, tr, &m, &m, &q,
-        &pos, mq, &m, R, &m,
-        &zero, P + ((t + 1) * m * m), &m, len_1, len_2);
+      memcpy(P + ((t + 1) * m * m), RQR, m * m * sizeof(double));
       F77_CALL(dgemm)(
         nt, nt, &m, &m, &m,
         &pos, T, &m, Ptt + (t * m * m), &m,
@@ -162,10 +170,6 @@ static int kfas0_c(
       if (disturbances) {
         // Smoothed eta disturbances (4.69)
         memcpy(V_eta + (t * q * q), Q, q * q * sizeof(double));
-        F77_CALL(dgemm)(
-          nt, tr, &q, &m, &q,
-          &pos, Q, &q, R, &m,
-          &zero, qm_1, &q, len_1, len_2);
         F77_CALL(dgemv)(
           nt, &q, &m,
           &pos, qm_1, &q, r + ((t + 1) * m), &inc,
