@@ -193,33 +193,26 @@ kfas <- function(
     as.logical(disturbances)
   )
 
-  result <- list()
-
-  n <- nrow(obs)
-  p <- ncol(obs)
-  m <- nrow(vartrans)
-  q <- ncol(vartrans)
-
-  F <- as.vector(t(matrix(x[[2]], p * n, m)))
-
-  result$v <- t(x[[1]])
-  result$F <- array(x[[2]], c(p, n))
-  result$att <- t(x[[3]])
-  result$Ptt <-  array(x[[4]], c(m, m, n))
-  result$a <- t(x[[5]])
-  result$P <-  array(x[[6]], c(m, m, n + 1))
-  result$K <-  array(x[[7]] * F, c(m, p, n))
-  result$r <- t(x[[8]])
-  result$N <-  array(x[[9]], c(m, m, n + 1))
-  result$epshat <- t(x[[10]])
-  result$V_eps <- array(x[[11]], c(p, n))
-  result$etahat <- t(x[[12]])
-  result$V_eta <- array(x[[13]], c(q, q, n))
-  result$alphahat <- t(x[[14]])
-  result$V <-  array(x[[15]], c(m, m, n))
-  result$logLik <- x[[16]]
-
-  return(result)
+  # The C code returns arrays already shaped; series-by-time matrices are
+  # transposed to time-by-series
+  list(
+    v = t(x[[1]]),
+    F = x[[2]],
+    att = t(x[[3]]),
+    Ptt = x[[4]],
+    a = t(x[[5]]),
+    P = x[[6]],
+    K = x[[7]],
+    r = t(x[[8]]),
+    N = x[[9]],
+    epshat = t(x[[10]]),
+    V_eps = x[[11]],
+    etahat = t(x[[12]]),
+    V_eta = x[[13]],
+    alphahat = t(x[[14]]),
+    V = x[[15]],
+    logLik = x[[16]]
+  )
 }
 
 # Convert to double storage, keeping dimensions; the C code reads doubles
@@ -227,7 +220,7 @@ as_double <- function(x) {
   if (!is.numeric(x)) {
     stop(deparse(substitute(x)), " must be numeric", call. = FALSE)
   }
-  storage.mode(x) <- "double"
+  if (!is.double(x)) storage.mode(x) <- "double"
   x
 }
 

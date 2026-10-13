@@ -422,20 +422,20 @@ extern "C" SEXP kfas(
   bool do_disturbances = asLogical(disturbances) == TRUE;
 
   SEXP v        = PROTECT(allocMatrix(REALSXP, p    , n));
-  SEXP F        = PROTECT(allocMatrix(REALSXP, p * p, n));
+  SEXP F        = PROTECT(alloc3DArray(REALSXP, p, p, n));
   SEXP att      = PROTECT(allocMatrix(REALSXP, m    , n));
-  SEXP Ptt      = PROTECT(allocMatrix(REALSXP, m * m, n));
+  SEXP Ptt      = PROTECT(alloc3DArray(REALSXP, m, m, n));
   SEXP a        = PROTECT(allocMatrix(REALSXP, m    , n + 1));
-  SEXP P        = PROTECT(allocMatrix(REALSXP, m * m, n + 1));
-  SEXP K        = PROTECT(allocMatrix(REALSXP, m * p, n));
+  SEXP P        = PROTECT(alloc3DArray(REALSXP, m, m, n + 1));
+  SEXP K        = PROTECT(alloc3DArray(REALSXP, m, p, n));
   SEXP r        = PROTECT(allocMatrix(REALSXP, m    , n + 1));
-  SEXP N        = PROTECT(allocMatrix(REALSXP, m * m, n + 1));
+  SEXP N        = PROTECT(alloc3DArray(REALSXP, m, m, n + 1));
   SEXP epshat   = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP V_eps    = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP etahat   = PROTECT(allocMatrix(REALSXP, q    , n));
-  SEXP V_eta    = PROTECT(allocMatrix(REALSXP, q * q, n));
+  SEXP V_eta    = PROTECT(alloc3DArray(REALSXP, q, q, n));
   SEXP alphahat = PROTECT(allocMatrix(REALSXP, m    , n));
-  SEXP V        = PROTECT(allocMatrix(REALSXP, m * m, n));
+  SEXP V        = PROTECT(alloc3DArray(REALSXP, m, m, n));
   SEXP loglik   = PROTECT(allocVector(REALSXP, 1));
 
   int list_length = 16;

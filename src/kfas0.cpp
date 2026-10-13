@@ -122,13 +122,13 @@ static void kfas0_c(
     memcpy(Ptt + (t * m * m), P + (t * m * m), m * m * sizeof(double));
     
     for (int i = 0; i < p; i++) {
-      // A missing observation carries no information: no update, and K = 0
-      // and Finv = 0 make the smoother pass r and N through unchanged
+      // A missing observation carries no information: no update, and
+      // Finv = 0 makes the smoother pass r and N through unchanged
       if (ISNAN(y[(t * p) + i])) {
         v[(t * p) + i] = NA_REAL;
         F[(t * p) + i] = NA_REAL;
         Finv[(t * p) + i] = 0.0;
-        memset(K + (t * m * p) + (i * m), 0, m * sizeof(double));
+        fill_na(K + (t * m * p) + (i * m), m);
         continue;
       }
 
@@ -137,7 +137,7 @@ static void kfas0_c(
         &m, Z_t + i, &p, att + (t * m), &inc);
       F[(t * p) + i] = H_t[(i * p) + i];
 
-      // M = Ptt Z_i' (stored in K), F = H_i + Z_i M
+      // M = Ptt Z_i' (returned as K), F = H_i + Z_i M
       F77_CALL(dsymv)(
         up, &m,
         &pos, Ptt + (t * m * m), &m, Z_t + i, &p,
@@ -147,8 +147,8 @@ static void kfas0_c(
 
       // F is numerically zero when it is within rounding error of the
       // terms summed to form it; the observation then carries no
-      // information, so skip the update (K = 0 and Finv = 0 also make
-      // the smoother pass r and N through unchanged)
+      // information, so skip the update (Finv = 0 also makes the smoother
+      // pass r and N through unchanged)
       double scale = fabs(H_t[(i * p) + i]);
       for (int j = 0; j < m; j++) {
         scale += fabs(Z_t[i + (j * p)] * K[(t * m * p) + (i * m) + j]);
@@ -159,19 +159,18 @@ static void kfas0_c(
         continue;
       }
 
-      // K matrix (6.13), K = M / F
       Finv[(t * p) + i] = 1.0 / F[(t * p) + i];
       ll_sum += log(F[(t * p) + i]) +
         v[(t * p) + i] * v[(t * p) + i] * Finv[(t * p) + i];
       n_obs++;
-      F77_CALL(dscal)(
-        &m, Finv + (t * p) + i, K + (t * m * p) + (i * m), &inc);
 
-      // Update state (6.12)
+      // Update state (6.12) with gain M / F: att += M v / F,
+      // Ptt -= M M' / F
+      c = v[(t * p) + i] * Finv[(t * p) + i];
       F77_CALL(daxpy)(
-        &m, v + (t * p) + i, K + (t * m * p) + (i * m), &inc,
+        &m, &c, K + (t * m * p) + (i * m), &inc,
         att + (t * m), &inc);
-      c = neg * F[(t * p) + i];
+      c = -Finv[(t * p) + i];
       F77_CALL(dger)(
         &m, &m,
         &c, K + (t * m * p) + (i * m), &inc, K + (t * m * p) + (i * m), &inc,
@@ -244,28 +243,38 @@ static void kfas0_c(
       }
 
       for (int i = p - 1; i >= 0; i--) {
-        // L = I - K z' is rank-1 (z = Z_i'), so it is never formed:
+        double Finv_ti = Finv[(t * p) + i];
+
+        // Skipped (missing or uninformative) observations leave r and N
+        // unchanged; epsilon keeps its prior mean and variance
+        if (Finv_ti == 0.0) {
+          if (disturbances) {
+            epshat[(t * p) + i] = 0.0;
+            V_eps[(t * p) + i] = H_t[(i * p) + i];
+          }
+          continue;
+        }
+
+        // L = I - K z' is rank-1 (z = Z_i', K = M / F), so it is never
+        // formed:
         //   L'r + F^-1 v z    = r + (F^-1 v - K'r) z
         //   L'NL + F^-1 z z'  = N - z w' - w z' + (s + F^-1) z z'
         // with w = N K and s = K'w
-        double *K_ti = K + (t * m * p) + (i * m);
-        double Kr = F77_CALL(ddot)(&m, K_ti, &inc, r + (t * m), &inc);
+        double *M_ti = K + (t * m * p) + (i * m);
+        double Kr = Finv_ti * F77_CALL(ddot)(&m, M_ti, &inc, r + (t * m), &inc);
         F77_CALL(dsymv)(
           up, &m,
-          &pos, N + (t * m * m), &m, K_ti, &inc,
+          &Finv_ti, N + (t * m * m), &m, M_ti, &inc,
           &zero, m1, &inc, len_1);
-        double s = F77_CALL(ddot)(&m, K_ti, &inc, m1, &inc);
-
-        // Finv v, which is zero for skipped observations (v may be NA)
-        double Finv_v = Finv[(t * p) + i] != 0.0 ?
-          Finv[(t * p) + i] * v[(t * p) + i] : 0.0;
+        double s = Finv_ti * F77_CALL(ddot)(&m, M_ti, &inc, m1, &inc);
+        double Finv_v = Finv_ti * v[(t * p) + i];
 
         if (disturbances) {
           // Smoothed epsilon disturbances
           epshat[(t * p) + i] =
             H_t[(i * p) + i] * (Finv_v - Kr);
           V_eps[(t * p) + i] = H_t[(i * p) + i] -
-            H_t[(i * p) + i] * H_t[(i * p) + i] * (Finv[(t * p) + i] + s);
+            H_t[(i * p) + i] * H_t[(i * p) + i] * (Finv_ti + s);
         }
 
         // Weighted sum of innovations (6.15.1)
@@ -279,7 +288,7 @@ static void kfas0_c(
           &m, &m,
           &neg, m1, &inc, Z_t + i, &p,
           N + (t * m * m), &m);
-        c = s + Finv[(t * p) + i];
+        c = s + Finv_ti;
         F77_CALL(dger)(
           &m, &m,
           &c, Z_t + i, &p, Z_t + i, &p,
@@ -346,18 +355,18 @@ extern "C" SEXP kfas0(
   SEXP v        = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP F        = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP att      = PROTECT(allocMatrix(REALSXP, m    , n));
-  SEXP Ptt      = PROTECT(allocMatrix(REALSXP, m * m, n));
+  SEXP Ptt      = PROTECT(alloc3DArray(REALSXP, m, m, n));
   SEXP a        = PROTECT(allocMatrix(REALSXP, m    , n + 1));
-  SEXP P        = PROTECT(allocMatrix(REALSXP, m * m, n + 1));
-  SEXP K        = PROTECT(allocMatrix(REALSXP, m * p, n));
+  SEXP P        = PROTECT(alloc3DArray(REALSXP, m, m, n + 1));
+  SEXP K        = PROTECT(alloc3DArray(REALSXP, m, p, n));
   SEXP r        = PROTECT(allocMatrix(REALSXP, m    , n + 1));
-  SEXP N        = PROTECT(allocMatrix(REALSXP, m * m, n + 1));
+  SEXP N        = PROTECT(alloc3DArray(REALSXP, m, m, n + 1));
   SEXP epshat   = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP V_eps    = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP etahat   = PROTECT(allocMatrix(REALSXP, q    , n));
-  SEXP V_eta    = PROTECT(allocMatrix(REALSXP, q * q, n));
+  SEXP V_eta    = PROTECT(alloc3DArray(REALSXP, q, q, n));
   SEXP alphahat = PROTECT(allocMatrix(REALSXP, m    , n));
-  SEXP V        = PROTECT(allocMatrix(REALSXP, m * m, n));
+  SEXP V        = PROTECT(alloc3DArray(REALSXP, m, m, n));
   SEXP loglik   = PROTECT(allocVector(REALSXP, 1));
 
   int list_length = 16;
