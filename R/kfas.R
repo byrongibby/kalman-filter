@@ -6,18 +6,24 @@ kfas <- function(
   vartrans,
   statevar,
   inita,
-  initp
+  initp,
+  smoother = TRUE,
+  disturbances = TRUE
 ) {
+  if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
+
   x <- .Call(
     "kfas0",
-    t(obs),
-    obsmat,
-    obsvar,
-    statemat,
-    vartrans,
-    statevar,
-    inita,
-    initp
+    t(as_double(obs)),
+    as_double(obsmat),
+    as_double(obsvar),
+    as_double(statemat),
+    as_double(vartrans),
+    as_double(statevar),
+    as_double(inita),
+    as_double(initp),
+    as.logical(smoother),
+    as.logical(disturbances)
   )
 
   result <- list()
@@ -46,6 +52,15 @@ kfas <- function(
   result$V <-  array(x[[15]], c(m, m, n))
 
   return(result)
+}
+
+# Convert to double storage, keeping dimensions; the C code reads doubles
+as_double <- function(x) {
+  if (!is.numeric(x)) {
+    stop(deparse(substitute(x)), " must be numeric", call. = FALSE)
+  }
+  storage.mode(x) <- "double"
+  x
 }
 
 mvrnorm <- function(n, mu, sigma) {

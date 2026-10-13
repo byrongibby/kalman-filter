@@ -1,8 +1,9 @@
 // Kalman Filter (univariate treatment)
 // Byron Botha 2025
 
+#include <float.h>
+#include <math.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <Rinternals.h>
@@ -56,6 +57,27 @@ static int stride(SEXP x, int size, int n, const char *name) {
         "not %lld", name, size, size * n, (long long) len);
 }
 
+// Error unless x is a double vector of the given length
+static void check_double(SEXP x, R_xlen_t size, const char *name) {
+  if (TYPEOF(x) != REALSXP) error("%s must be a double vector or array", name);
+  if (size >= 0 && XLENGTH(x) != size) {
+    error("%s must have %lld elements, not %lld", name, (long long) size,
+          (long long) XLENGTH(x));
+  }
+}
+
+// Error unless x is a double matrix or array (at least two dimensions)
+static void check_matrix(SEXP x, const char *name) {
+  check_double(x, -1, name);
+  if (length(getAttrib(x, R_DimSymbol)) < 2) {
+    error("%s must be a matrix or array", name);
+  }
+}
+
+static void fill_na(double *x, R_xlen_t len) {
+  for (R_xlen_t i = 0; i < len; i++) x[i] = NA_REAL;
+}
+
 // True if every one of the nH p x p slices of H is diagonal
 static bool is_diagonal(double *H, int p, int nH) {
   for (int k = 0; k < nH; k++)
@@ -80,7 +102,7 @@ static void cholesky(double *H, int p, int nH, double *L) {
   }
 }
 
-static int kfas0_c(
+static void kfas0_c(
     int n,
     int p,
     int m,
@@ -111,7 +133,6 @@ static int kfas0_c(
     double *V_eta,
     double *alphahat,
     double *V,
-    bool filter,
     bool smoother,
     bool disturbances
 ) {
@@ -146,71 +167,85 @@ static int kfas0_c(
     compute_QR(m, q, R, Q, qm_1);
   }
 
-  if (filter) {
-    // Initialise v = y
-    memcpy(v, y, n * p * sizeof(double));
+  // Initialise v = y
+  memcpy(v, y, n * p * sizeof(double));
+  
+  // Filter
+  for (int t = 0; t < n; t++) {
+    double *Z_t = Z + (t * dZ);
+    double *H_t = H + (t * dH);
+    double *T_t = T + (t * dT);
+
+    memcpy(att + (t * m), a + (t * m), m * sizeof(double));
+    memcpy(Ptt + (t * m * m), P + (t * m * m), m * m * sizeof(double));
     
-    // Filter
-    for (int t = 0; t < n; t++) {
-      double *Z_t = Z + (t * dZ);
-      double *H_t = H + (t * dH);
-      double *T_t = T + (t * dT);
+    for (int i = 0; i < p; i++) {
+      // Innovation (6.13)
+      v[(t * p) + i] -= F77_CALL(ddot)(
+        &m, Z_t + i, &p, att + (t * m), &inc);
+      F[(t * p) + i] = H_t[(i * p) + i];
 
-      memcpy(att + (t * m), a + (t * m), m * sizeof(double));
-      memcpy(Ptt + (t * m * m), P + (t * m * m), m * m * sizeof(double));
-      
-      for (int i = 0; i < p; i++) {
-        // Innovation (6.13)
-        v[(t * p) + i] -= F77_CALL(ddot)(
-          &m, Z_t + i, &p, att + (t * m), &inc);
-        F[(t * p) + i] = H_t[(i * p) + i];
+      // M = Ptt Z_i' (stored in K), F = H_i + Z_i M
+      F77_CALL(dsymv)(
+        up, &m,
+        &pos, Ptt + (t * m * m), &m, Z_t + i, &p,
+        &zero, K + (t * m * p) + (i * m), &inc, len_1);
+      F[(t * p) + i] += F77_CALL(ddot)(
+        &m, K + (t * m * p) + (i * m), &inc, Z_t + i, &p);
 
-        // M = Ptt Z_i' (stored in K), F = H_i + Z_i M
-        F77_CALL(dsymv)(
-          up, &m,
-          &pos, Ptt + (t * m * m), &m, Z_t + i, &p,
-          &zero, K + (t * m * p) + (i * m), &inc, len_1);
-        F[(t * p) + i] += F77_CALL(ddot)(
-          &m, K + (t * m * p) + (i * m), &inc, Z_t + i, &p);
-
-        // K matrix (6.13), K = M / F
-        Finv[(t * p) + i] = 1.0 / F[(t * p) + i];
-        F77_CALL(dscal)(
-          &m, Finv + (t * p) + i, K + (t * m * p) + (i * m), &inc);
-
-        // Update state (6.12)
-        F77_CALL(daxpy)(
-          &m, v + (t * p) + i, K + (t * m * p) + (i * m), &inc,
-          att + (t * m), &inc);
-        c = neg * F[(t * p) + i];
-        F77_CALL(dger)(
-          &m, &m,
-          &c, K + (t * m * p) + (i * m), &inc, K + (t * m * p) + (i * m), &inc,
-          Ptt + (t * m * m), &m);
+      // F is numerically zero when it is within rounding error of the
+      // terms summed to form it; the observation then carries no
+      // information, so skip the update (K = 0 and Finv = 0 also make
+      // the smoother pass r and N through unchanged)
+      double scale = fabs(H_t[(i * p) + i]);
+      for (int j = 0; j < m; j++) {
+        scale += fabs(Z_t[i + (j * p)] * K[(t * m * p) + (i * m) + j]);
+      }
+      if (F[(t * p) + i] <= sqrt(DBL_EPSILON) * scale) {
+        Finv[(t * p) + i] = 0.0;
+        memset(K + (t * m * p) + (i * m), 0, m * sizeof(double));
+        continue;
       }
 
-      // Predict state (6.14)
-      F77_CALL(dgemv)(
-        nt, &m, &m,
-        &pos, T_t, &m, att + (t * m), &inc,
-        &zero, a + ((t + 1) * m), &inc, len_1);
-      if (varying_RQ) compute_RQR(m, q, R + (t * dR), Q + (t * dQ), mq, RQR);
-      memcpy(P + ((t + 1) * m * m), RQR, m * m * sizeof(double));
-      F77_CALL(dgemm)(
-        nt, nt, &m, &m, &m,
-        &pos, T_t, &m, Ptt + (t * m * m), &m,
-        &zero, mm, &m, len_1, len_2);
-      F77_CALL(dgemm)(
-        nt, tr, &m, &m, &m,
-        &pos, mm, &m, T_t, &m,
-        &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
+      // K matrix (6.13), K = M / F
+      Finv[(t * p) + i] = 1.0 / F[(t * p) + i];
+      F77_CALL(dscal)(
+        &m, Finv + (t * p) + i, K + (t * m * p) + (i * m), &inc);
+
+      // Update state (6.12)
+      F77_CALL(daxpy)(
+        &m, v + (t * p) + i, K + (t * m * p) + (i * m), &inc,
+        att + (t * m), &inc);
+      c = neg * F[(t * p) + i];
+      F77_CALL(dger)(
+        &m, &m,
+        &c, K + (t * m * p) + (i * m), &inc, K + (t * m * p) + (i * m), &inc,
+        Ptt + (t * m * m), &m);
     }
+
+    // Predict state (6.14)
+    F77_CALL(dgemv)(
+      nt, &m, &m,
+      &pos, T_t, &m, att + (t * m), &inc,
+      &zero, a + ((t + 1) * m), &inc, len_1);
+    if (varying_RQ) compute_RQR(m, q, R + (t * dR), Q + (t * dQ), mq, RQR);
+    memcpy(P + ((t + 1) * m * m), RQR, m * m * sizeof(double));
+    F77_CALL(dgemm)(
+      nt, nt, &m, &m, &m,
+      &pos, T_t, &m, Ptt + (t * m * m), &m,
+      &zero, mm, &m, len_1, len_2);
+    F77_CALL(dgemm)(
+      nt, tr, &m, &m, &m,
+      &pos, mm, &m, T_t, &m,
+      &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
   }
 
   if (smoother || disturbances) {
-    // Initialise alphahat = a, and V = P
-    memcpy(alphahat, a, n * m * sizeof(double));
-    memcpy(V, P, n * m * m * sizeof(double));
+    if (smoother) {
+      // Initialise alphahat = a, and V = P
+      memcpy(alphahat, a, n * m * sizeof(double));
+      memcpy(V, P, n * m * m * sizeof(double));
+    }
 
     // Smooth
     for (int t = n - 1; t >= 0; t--) {
@@ -307,8 +342,6 @@ static int kfas0_c(
       }
     }
   }
-
-  return 0;
 }
 
 extern "C" SEXP kfas0(
@@ -319,8 +352,17 @@ extern "C" SEXP kfas0(
     SEXP R,
     SEXP Q,
     SEXP a1,
-    SEXP P1
+    SEXP P1,
+    SEXP smoother,
+    SEXP disturbances
 ) {
+  check_matrix(y, "y");
+  check_matrix(R, "R");
+  check_double(Z, -1, "Z");
+  check_double(H, -1, "H");
+  check_double(T, -1, "T");
+  check_double(Q, -1, "Q");
+
   SEXP dim_y = PROTECT(getAttrib(y, R_DimSymbol));
   SEXP dim_R = PROTECT(getAttrib(R, R_DimSymbol));
   
@@ -334,6 +376,11 @@ extern "C" SEXP kfas0(
   int dT = stride(T, m * m, n, "T");
   int dR = stride(R, m * q, n, "R");
   int dQ = stride(Q, q * q, n, "Q");
+  check_double(a1, m, "a1");
+  check_double(P1, (R_xlen_t) m * m, "P1");
+
+  bool do_smoother = asLogical(smoother) == TRUE;
+  bool do_disturbances = asLogical(disturbances) == TRUE;
 
   SEXP v        = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP F        = PROTECT(allocMatrix(REALSXP, p    , n));
@@ -436,7 +483,10 @@ extern "C" SEXP kfas0(
     dH_in = 0;
   }
 
-  if (kfas0_c(
+  // Original-scale V_eps for non-diagonal H needs the smoothed V
+  bool run_smoother = do_smoother || (do_disturbances && !diagonal);
+
+  kfas0_c(
     n,
     p,
     m,
@@ -467,12 +517,11 @@ extern "C" SEXP kfas0(
     V_eta_ptr,
     alphahat_ptr,
     V_ptr,
-    true,
-    true,
-    true
-  ) != 0) printf("Filter failed!\n");
+    run_smoother,
+    do_disturbances
+  );
 
-  if (!diagonal) {
+  if (!diagonal && do_disturbances) {
     // Return the epsilon disturbances in the original scale, using
     // epshat = L epshat* (= y - Z alphahat) and Var(eps | y) = Z V Z'
     // (diagonal only). v, F and K stay in the transformed scale.
@@ -491,6 +540,22 @@ extern "C" SEXP kfas0(
         V_eps_ptr[(t * p) + i] = F77_CALL(ddot)(&m, Z_t + i, &p, m1, &inc);
       }
     }
+  }
+
+  // Outputs that were not requested are NA rather than uninitialised
+  if (!do_smoother) {
+    fill_na(alphahat_ptr, XLENGTH(alphahat));
+    fill_na(V_ptr, XLENGTH(V));
+  }
+  if (!do_disturbances) {
+    fill_na(epshat_ptr, XLENGTH(epshat));
+    fill_na(V_eps_ptr, XLENGTH(V_eps));
+    fill_na(etahat_ptr, XLENGTH(etahat));
+    fill_na(V_eta_ptr, XLENGTH(V_eta));
+  }
+  if (!do_smoother && !do_disturbances) {
+    fill_na(r_ptr, XLENGTH(r));
+    fill_na(N_ptr, XLENGTH(N));
   }
 
   SET_VECTOR_ELT(result,  0, v);
