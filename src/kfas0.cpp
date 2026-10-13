@@ -42,6 +42,7 @@ static int kfas0_c(
   // Scalars required for BLAS/LAPACK routines
   const char *tr = "t";
   const char *nt = "n";
+  const char *up = "u";
   int inc = 1;
   double pos = 1.0;
   double neg = -1.0;
@@ -97,21 +98,18 @@ static int kfas0_c(
           nt, &inc, &m,
           &neg, Z + i, &p, att + (t * m), &inc,
           &pos, v + (t * p) + i, &inc, len_1);
-        F77_CALL(dgemm)(
-          nt, nt, &inc, &m, &m,
-          &pos, Z + i, &p, Ptt + (t * m * m), &m,
-          &zero, m1, &inc, len_1, len_2);
-        F77_CALL(dgemv)(
-          nt, &inc, &m,
-          &pos, m1, &inc, Z + i, &p,
-          &pos, F + (t * p) + i, &inc, len_1);
-        
-        // K matrix (6.13)
-        Finv[(t * p) + i] = 1.0 / F[(t * p) + i];
-        F77_CALL(dgemv)(
-          nt, &m, &m,
-          Finv + (t * p) + i, Ptt + (t * m * m), &m, Z + i, &p,
+        // M = Ptt Z_i' (stored in K), F = H_i + Z_i M
+        F77_CALL(dsymv)(
+          up, &m,
+          &pos, Ptt + (t * m * m), &m, Z + i, &p,
           &zero, K + (t * m * p) + (i * m), &inc, len_1);
+        F[(t * p) + i] += F77_CALL(ddot)(
+          &m, K + (t * m * p) + (i * m), &inc, Z + i, &p);
+
+        // K matrix (6.13), K = M / F
+        Finv[(t * p) + i] = 1.0 / F[(t * p) + i];
+        F77_CALL(dscal)(
+          &m, Finv + (t * p) + i, K + (t * m * p) + (i * m), &inc);
 
         // Update state (6.12)
         F77_CALL(dgemv)(
