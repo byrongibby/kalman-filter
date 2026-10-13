@@ -55,7 +55,6 @@ static int kfas0_c(
   // Temporary storage for intermediate results
   // (R_alloc memory is reclaimed by R when the .Call returns)
   double *Finv = (double *) R_alloc(n * p, sizeof(double));
-  double *L    = (double *) R_alloc(m * m, sizeof(double));
   double *m1   = (double *) R_alloc(m,     sizeof(double));
   double *mq   = (double *) R_alloc(m * q, sizeof(double));
   double *mm   = (double *) R_alloc(m * m, sizeof(double));
@@ -63,10 +62,6 @@ static int kfas0_c(
   double *qm_2 = mq;
   double *RQR  = (double *) R_alloc(m * m, sizeof(double));
   double c;
-
-  // Create mxm identity matrix (S_alloc zero-fills)
-  double *Ident = (double *) S_alloc(m * m, sizeof(double));
-  for (int i = 0; i < m; i++) Ident[(i * m) + i] = 1.0;
 
   // Time-invariant state disturbance variance RQR' and QR'
   F77_CALL(dgemm)(
@@ -145,10 +140,6 @@ static int kfas0_c(
     memcpy(alphahat, a, n * m * sizeof(double));
     memcpy(V, P, n * m * m * sizeof(double));
 
-    // Initialise epshat = v, and V_eps = F
-    memcpy(epshat, v, n * p * sizeof(double));
-    memcpy(V_eps, Finv, n * p * sizeof(double));
-
     // Smooth
     for (int t = n - 1; t >= 0; t--) {
       // Previous weighted sum of innovations (6.15.2)
@@ -183,54 +174,42 @@ static int kfas0_c(
       }
 
       for (int i = p - 1; i >= 0; i--) {
+        // L = I - K z' is rank-1 (z = Z_i'), so it is never formed:
+        //   L'r + F^-1 v z    = r + (F^-1 v - K'r) z
+        //   L'NL + F^-1 z z'  = N - z w' - w z' + (s + F^-1) z z'
+        // with w = N K and s = K'w
+        double *K_ti = K + (t * m * p) + (i * m);
+        double Kr = F77_CALL(ddot)(&m, K_ti, &inc, r + (t * m), &inc);
+        F77_CALL(dsymv)(
+          up, &m,
+          &pos, N + (t * m * m), &m, K_ti, &inc,
+          &zero, m1, &inc, len_1);
+        double s = F77_CALL(ddot)(&m, K_ti, &inc, m1, &inc);
+
         if (disturbances) {
           // Smoothed epsilon disturbances
-          F77_CALL(dgemv)(
-            tr, &m, &inc,
-            &neg, K + (t * m * p) + (i * m), &m, r + (t * m), &inc,
-            Finv + (t * p) + i, epshat + (t * p) + i, &inc, len_1);
-          epshat[(t * p) + i] *= H[(i * p) + i];
-          F77_CALL(dgemv)(
-            nt, &m, &m,
-            &pos, N + (t * m * m), &m, K + (t * m * p) + (i * m), &inc,
-            &zero, m1, &inc, len_1);
-          F77_CALL(dgemv)(
-            tr, &m, &inc,
-            &pos, K + (t * m * p) + (i * m), &m, m1, &inc,
-            &pos, V_eps + (t * p) + i, &inc, len_1);
-          V_eps[(t * p) + i] *= H[(i * p) + i] * H[(i * p) + i];
-          V_eps[(t * p) + i] = H[(i * p) + i] - V_eps[(t * p) + i];
+          epshat[(t * p) + i] =
+            H[(i * p) + i] * (Finv[(t * p) + i] * v[(t * p) + i] - Kr);
+          V_eps[(t * p) + i] = H[(i * p) + i] -
+            H[(i * p) + i] * H[(i * p) + i] * (Finv[(t * p) + i] + s);
         }
 
-        // L matrix
-        memcpy(L, Ident, m * m * sizeof(double));
-        F77_CALL(dgemm)(
-          nt, nt, &m, &m, &inc,
-          &neg, K + (t * m * p) + (i * m), &m, Z + i, &p,
-          &pos, L, &m, len_1, len_2);
-
         // Weighted sum of innovations (6.15.1)
-        memcpy(m1, r + (t * m), m * sizeof(double));
-        F77_CALL(dgemv)(
-          tr, &m, &m,
-          &pos, L, &m, m1, &inc,
-          &zero, r + (t * m), &inc, len_1);
-        F77_CALL(dgemv)(
-          tr, &inc, &m,
-          Finv + (t * p) + i, Z + i, &p, v + (t * p) + i, &inc,
-          &pos, r + (t * m), &inc, len_1);
-        F77_CALL(dgemm)(
-          tr, nt, &m, &m, &m,
-          &pos, L, &m, N + (t * m * m), &m,
-          &zero, mm, &m, len_1, len_2);
-        F77_CALL(dgemm)(
-          nt, nt, &m, &m, &m,
-          &pos, mm, &m, L, &m,
-          &zero, N + (t * m * m), &m, len_1, len_2);
-        F77_CALL(dgemm)(
-          tr, nt, &m, &m, &inc,
-          Finv + (t * p) + i, Z + i, &p, Z + i, &p,
-          &pos, N + (t * m * m), &m, len_1, len_2);
+        c = Finv[(t * p) + i] * v[(t * p) + i] - Kr;
+        F77_CALL(daxpy)(&m, &c, Z + i, &p, r + (t * m), &inc);
+        F77_CALL(dger)(
+          &m, &m,
+          &neg, Z + i, &p, m1, &inc,
+          N + (t * m * m), &m);
+        F77_CALL(dger)(
+          &m, &m,
+          &neg, m1, &inc, Z + i, &p,
+          N + (t * m * m), &m);
+        c = s + Finv[(t * p) + i];
+        F77_CALL(dger)(
+          &m, &m,
+          &c, Z + i, &p, Z + i, &p,
+          N + (t * m * m), &m);
       }
 
       if (smoother) {
