@@ -51,17 +51,18 @@ static int kfas0_c(
   FC_LEN_T len_2 = 1;
 
   // Temporary storage for intermediate results
-  double *Finv = malloc(n * p * sizeof(double));
-  double *L    = malloc(m * m * sizeof(double));
-  double *m1   = malloc(m * sizeof(double));
-  double *mq   = malloc(m * q * sizeof(double));
-  double *mm   = malloc(m * m * sizeof(double));
-  double *qm_1 = malloc(q * m * sizeof(double));
+  // (R_alloc memory is reclaimed by R when the .Call returns)
+  double *Finv = (double *) R_alloc(n * p, sizeof(double));
+  double *L    = (double *) R_alloc(m * m, sizeof(double));
+  double *m1   = (double *) R_alloc(m,     sizeof(double));
+  double *mq   = (double *) R_alloc(m * q, sizeof(double));
+  double *mm   = (double *) R_alloc(m * m, sizeof(double));
+  double *qm_1 = (double *) R_alloc(q * m, sizeof(double));
   double *qm_2 = mq;
   double c;
 
-  // Create mxm identity matrix
-  double *Ident = calloc(m * m, sizeof(double));
+  // Create mxm identity matrix (S_alloc zero-fills)
+  double *Ident = (double *) S_alloc(m * m, sizeof(double));
   for (int i = 0; i < m; i++) Ident[(i * m) + i] = 1.0;
 
   if (filter) {
@@ -246,14 +247,6 @@ static int kfas0_c(
       }
     }
   }
-
-  free(Ident);
-  free(Finv);
-  free(L);
-  free(m1);
-  free(mq);
-  free(mm);
-  free(qm_1);
 
   return 0;
 }
