@@ -5,6 +5,7 @@
 #'
 #' * [kfas()] runs the filter, state smoother and disturbance smoother,
 #'   with time-varying system matrices and non-diagonal observation noise.
+#' * [kfas_loglik()] computes only the log-likelihood, for optimisation.
 #' * [mvrnorm()] draws from a multivariate normal distribution.
 #'
 #' @keywords internal

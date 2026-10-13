@@ -13,6 +13,7 @@ implemented in C-style C++ on top of BLAS and LAPACK.
 \itemize{
 \item \code{\link[=kfas]{kfas()}} runs the filter, state smoother and disturbance smoother,
 with time-varying system matrices and non-diagonal observation noise.
+\item \code{\link[=kfas_loglik]{kfas_loglik()}} computes only the log-likelihood, for optimisation.
 \item \code{\link[=mvrnorm]{mvrnorm()}} draws from a multivariate normal distribution.
 }
 }

@@ -81,3 +81,46 @@ test_that("logLik does not depend on the smoother and disturbance flags", {
                           disturbances = FALSE)$logLik,
     run_kfas_multivariate(mod, y)$logLik)
 })
+
+run_kfas_loglik <- function(mod, y) {
+  kfas_loglik(y, mod$Z, mod$H, mod$T, mod$R, mod$Q, mod$a1, mod$P1)
+}
+
+test_that("kfas_loglik is identical to kfas()$logLik", {
+  for (name in names(models)) {
+    mod <- models[[name]]
+    y <- simulate_y(mod)
+    expect_identical(run_kfas_loglik(mod, y), run_kfas(mod, y)$logLik,
+                     label = name)
+
+    # With missing observations, including a fully missing time step
+    y[c(3, 17, 30)] <- NA
+    y[10, ] <- NA
+    expect_identical(run_kfas_loglik(mod, y), run_kfas(mod, y)$logLik,
+                     label = paste(name, "with missing data"))
+  }
+
+  # An uninformative series (F = 0) is skipped the same way
+  mod <- bivariate()
+  mod$Z[2, ] <- 0
+  mod$H[2, 2] <- 0
+  y <- simulate_y(mod)
+  expect_identical(run_kfas_loglik(mod, y), run_kfas(mod, y)$logLik)
+})
+
+test_that("kfas_loglik validates its inputs like kfas", {
+  mod <- bivariate()
+  y <- simulate_y(mod)
+
+  expect_error(run_kfas_loglik(mod, as.vector(y)),
+               "obs must be an n x p matrix")
+  bad <- mod
+  bad$a1 <- 0
+  expect_error(run_kfas_loglik(bad, y), "a1 must have 3 elements, not 1")
+  bad <- mod
+  bad$Q <- array(mod$Q, c(dim(mod$Q), nrow(y) - 1))
+  expect_error(run_kfas_loglik(bad, y), "Q must have 4 .* or 160")
+  bad <- mod
+  bad$H <- matrix(c(1, 2, 2, 1), 2)
+  expect_error(run_kfas_loglik(bad, y), "H is not positive definite")
+})

@@ -129,7 +129,8 @@
 #'     not contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
 #'     Cholesky transform, so it is the likelihood of the original
 #'     \eqn{y}. Computed by the filter, whatever `smoother` and
-#'     `disturbances` are.}
+#'     `disturbances` are. Use [kfas_loglik()] when only the
+#'     log-likelihood is needed.}
 #' }
 #'
 #' @references Durbin, J. and Koopman, S. J. (2012). *Time Series Analysis
@@ -153,16 +154,10 @@
 #' fit_tv <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1), Q,
 #'                0, matrix(1e7))
 #'
-#' # Maximum likelihood estimation of the two variances, filtering only.
-#' # (The large initp approximates a diffuse initial state, so the first
-#' # observation's contribution is dominated by it.)
-#' negloglik <- function(log_var) {
-#'   -kfas(y, matrix(1), matrix(exp(log_var[1])), matrix(1), matrix(1),
-#'         matrix(exp(log_var[2])), 0, matrix(1e7),
-#'         smoother = FALSE, disturbances = FALSE)$logLik
-#' }
-#' fit_ml <- optim(c(log(var(y)), log(var(y))), negloglik)
-#' exp(fit_ml$par)
+#' # Filtering only
+#' filtered <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
+#'                  matrix(1469.1), 0, matrix(1e7),
+#'                  smoother = FALSE, disturbances = FALSE)
 #'
 #' @export
 kfas <- function(
@@ -212,6 +207,60 @@ kfas <- function(
     alphahat = t(x[[14]]),
     V = x[[15]],
     logLik = x[[16]]
+  )
+}
+
+#' Log-likelihood of a state space model
+#'
+#' Computes the Gaussian log-likelihood of a linear Gaussian state space
+#' model with the Kalman filter, without storing any per-step output. It
+#' returns the same value as `kfas(...)$logLik` using O(\eqn{m^2}) rather
+#' than O(\eqn{n m^2}) memory, and is faster, which matters when it is
+#' evaluated many times, for example inside an optimiser.
+#'
+#' The model, arguments, time-varying system matrices, non-diagonal
+#' \eqn{H} and missing observations are as described in [kfas()].
+#'
+#' @inheritParams kfas
+#'
+#' @return The log-likelihood \eqn{\log p(y_1, \dots, y_n)}, a single
+#'   number. See `logLik` in [kfas()] for details.
+#'
+#' @examples
+#' # Maximum likelihood estimation of the two variances of the local level
+#' # model for the Nile data. (The large initp approximates a diffuse
+#' # initial state, so the first observation's contribution depends on it.)
+#' y <- matrix(as.numeric(Nile))
+#' negloglik <- function(log_var) {
+#'   -kfas_loglik(y, matrix(1), matrix(exp(log_var[1])), matrix(1),
+#'                matrix(1), matrix(exp(log_var[2])), 0, matrix(1e7))
+#' }
+#' fit <- optim(c(log(var(y)), log(var(y))), negloglik)
+#' exp(fit$par)
+#'
+#' @export
+kfas_loglik <- function(
+  obs,
+  obsmat,
+  obsvar,
+  statemat,
+  vartrans,
+  statevar,
+  inita,
+  initp
+) {
+  if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
+
+  .Call(
+    "kfas0_loglik",
+    t(as_double(obs)),
+    as_double(obsmat),
+    as_double(obsvar),
+    as_double(statemat),
+    as_double(vartrans),
+    as_double(statevar),
+    as_double(inita),
+    as_double(initp)
   )
 }
 

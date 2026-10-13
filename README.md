@@ -18,6 +18,9 @@ using the univariate treatment of multivariate series (Durbin & Koopman,
 - filtering only, or filtering and state smoothing only, via the
   `smoother` and `disturbances` arguments.
 
+`kfas_loglik()` computes only the log-likelihood, without storing the
+filter's per-step output, for use inside optimisers.
+
 `mvrnorm()` draws from a multivariate normal distribution.
 
 See `?kfas` for the model, argument shapes and outputs, and `TODO.md` for

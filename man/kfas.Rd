@@ -97,7 +97,8 @@ observation. Missing and uninformative observations (see above) do
 not contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
 Cholesky transform, so it is the likelihood of the original
 \eqn{y}. Computed by the filter, whatever \code{smoother} and
-\code{disturbances} are.}
+\code{disturbances} are. Use \code{\link[=kfas_loglik]{kfas_loglik()}} when only the
+log-likelihood is needed.}
 }
 }
 \description{
@@ -191,16 +192,10 @@ Q[1, 1, 29:n] <- 2 * 1469.1
 fit_tv <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1), Q,
                0, matrix(1e7))
 
-# Maximum likelihood estimation of the two variances, filtering only.
-# (The large initp approximates a diffuse initial state, so the first
-# observation's contribution is dominated by it.)
-negloglik <- function(log_var) {
-  -kfas(y, matrix(1), matrix(exp(log_var[1])), matrix(1), matrix(1),
-        matrix(exp(log_var[2])), 0, matrix(1e7),
-        smoother = FALSE, disturbances = FALSE)$logLik
-}
-fit_ml <- optim(c(log(var(y)), log(var(y))), negloglik)
-exp(fit_ml$par)
+# Filtering only
+filtered <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
+                 matrix(1469.1), 0, matrix(1e7),
+                 smoother = FALSE, disturbances = FALSE)
 
 }
 \references{
