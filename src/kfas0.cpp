@@ -56,6 +56,30 @@ static int stride(SEXP x, int size, int n, const char *name) {
         "not %lld", name, size, size * n, (long long) len);
 }
 
+// True if every one of the nH p x p slices of H is diagonal
+static bool is_diagonal(double *H, int p, int nH) {
+  for (int k = 0; k < nH; k++)
+    for (int j = 0; j < p; j++)
+      for (int i = 0; i < p; i++)
+        if (i != j && H[(k * p * p) + (j * p) + i] != 0.0) return false;
+
+  return true;
+}
+
+// Lower Cholesky factor L of each H slice, H = L L'. Only the lower
+// triangle of L is set; the triangular routines using it ignore the rest.
+static void cholesky(double *H, int p, int nH, double *L) {
+  const char *lo = "l";
+  int info;
+  FC_LEN_T len_1 = 1;
+
+  memcpy(L, H, p * p * nH * sizeof(double));
+  for (int k = 0; k < nH; k++) {
+    F77_CALL(dpotrf)(lo, &p, L + (k * p * p), &p, &info, len_1);
+    if (info != 0) error("H is not positive definite at time %d", k + 1);
+  }
+}
+
 static int kfas0_c(
     int n,
     int p,
@@ -361,19 +385,70 @@ extern "C" SEXP kfas0(
   memset(r_ptr + (n * m), 0, m * sizeof(double));
   memset(N_ptr + (n * m * m), 0, m * m * sizeof(double));
 
+  // Scalars required for BLAS routines
+  const char *lf = "l";
+  const char *lo = "l";
+  const char *nt = "n";
+  const char *nu = "n";
+  const char *up = "u";
+  int inc = 1;
+  double pos = 1.0;
+  double zero = 0.0;
+  FC_LEN_T len_1 = 1;
+
+  // The univariate treatment needs diagonal H. Otherwise factor H = L L'
+  // and filter the transformed model y* = L^-1 y, Z* = L^-1 Z, H* = I
+  double *y_in = y_ptr;
+  double *Z_in = Z_ptr;
+  double *H_in = H_ptr;
+  int dZ_in = dZ;
+  int dH_in = dH;
+  int dL = dH;
+  double *L = NULL;
+  bool diagonal = is_diagonal(H_ptr, p, dH ? n : 1);
+
+  if (!diagonal) {
+    L = (double *) R_alloc(p * p * (dH ? n : 1), sizeof(double));
+    cholesky(H_ptr, p, dH ? n : 1, L);
+
+    y_in = (double *) R_alloc(n * p, sizeof(double));
+    memcpy(y_in, y_ptr, n * p * sizeof(double));
+    for (int t = 0; t < n; t++) {
+      F77_CALL(dtrsv)(
+        lo, nt, nu, &p,
+        L + (t * dL), &p, y_in + (t * p), &inc, len_1, len_1, len_1);
+    }
+
+    // Z* varies over time if either Z or H does
+    dZ_in = (dZ != 0 || dH != 0) ? p * m : 0;
+    int nZ = dZ_in ? n : 1;
+    Z_in = (double *) R_alloc(p * m * nZ, sizeof(double));
+    for (int k = 0; k < nZ; k++) {
+      memcpy(Z_in + (k * p * m), Z_ptr + (k * dZ), p * m * sizeof(double));
+      F77_CALL(dtrsm)(
+        lf, lo, nt, nu, &p, &m,
+        &pos, L + (k * dL), &p, Z_in + (k * p * m), &p,
+        len_1, len_1, len_1, len_1);
+    }
+
+    H_in = (double *) S_alloc(p * p, sizeof(double));
+    for (int i = 0; i < p; i++) H_in[(i * p) + i] = 1.0;
+    dH_in = 0;
+  }
+
   if (kfas0_c(
     n,
     p,
     m,
     q,
-    y_ptr,
-    Z_ptr,
-    H_ptr,
+    y_in,
+    Z_in,
+    H_in,
     T_ptr,
     R_ptr,
     Q_ptr,
-    dZ,
-    dH,
+    dZ_in,
+    dH_in,
     dT,
     dR,
     dQ,
@@ -396,6 +471,27 @@ extern "C" SEXP kfas0(
     true,
     true
   ) != 0) printf("Filter failed!\n");
+
+  if (!diagonal) {
+    // Return the epsilon disturbances in the original scale, using
+    // epshat = L epshat* (= y - Z alphahat) and Var(eps | y) = Z V Z'
+    // (diagonal only). v, F and K stay in the transformed scale.
+    double *m1 = (double *) R_alloc(m, sizeof(double));
+    for (int t = 0; t < n; t++) {
+      double *Z_t = Z_ptr + (t * dZ);
+
+      F77_CALL(dtrmv)(
+        lo, nt, nu, &p,
+        L + (t * dL), &p, epshat_ptr + (t * p), &inc, len_1, len_1, len_1);
+      for (int i = 0; i < p; i++) {
+        F77_CALL(dsymv)(
+          up, &m,
+          &pos, V_ptr + (t * m * m), &m, Z_t + i, &p,
+          &zero, m1, &inc, len_1);
+        V_eps_ptr[(t * p) + i] = F77_CALL(ddot)(&m, Z_t + i, &p, m1, &inc);
+      }
+    }
+  }
 
   SET_VECTOR_ELT(result,  0, v);
   SET_VECTOR_ELT(result,  1, F);
