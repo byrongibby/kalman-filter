@@ -103,6 +103,14 @@ make_diffuse <- function(mod, diffuse = rep(TRUE, dim(mod$R)[1])) {
   mod
 }
 
+# Partially diffuse model where series 2 does not load on the diffuse state,
+# so F_inf = 0 for it while the diffuse phase continues
+partial_no_loading <- function() {
+  mod <- make_diffuse(bivariate(), c(TRUE, FALSE, FALSE))
+  mod$Z[2, 1] <- 0
+  mod
+}
+
 # Replace H in a p = 2 model with a non-diagonal one
 full_H <- function(mod) {
   mod$H <- matrix(c(1, 0.6, 0.6, 2), 2)

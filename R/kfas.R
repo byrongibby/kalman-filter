@@ -507,3 +507,94 @@ precision_sampler <- function(
   list(draws = aperm(x[[1]], c(2, 1, 3)), mean = t(x[[2]]))
 }
 
+#' Simulation smoother for the states
+#'
+#' Draws the states \eqn{\alpha_1, \dots, \alpha_n} jointly from their
+#' posterior distribution given the observations, using the simulation
+#' smoother of Durbin and Koopman (2002). Each draw is
+#' \eqn{\alpha^+ + \hat\alpha - \hat\alpha^+}{alpha+ + alphahat -
+#' alphahat+}, where \eqn{(\alpha^+, y^+)}{(alpha+, y+)} is simulated from
+#' the model and \eqn{\hat\alpha^+}{alphahat+} is the smoothed state for
+#' \eqn{y^+}{y+}.
+#'
+#' The model, arguments, time-varying system matrices, intercepts,
+#' non-diagonal \eqn{H}, missing observations and diffuse initialisation
+#' are as described in [kfas()], and every model [kfas()] accepts is
+#' supported, including singular \eqn{R_t Q_t R_t'}{R[t] Q[t] R[t]'},
+#' \eqn{H} or `initp`.
+#'
+#' The filter variances do not depend on the data, so they are computed
+#' once; each draw then costs only the mean recursions of the filter and
+#' smoother, \eqn{O(n (p m + m^2))}{O(n (p m + m^2))} operations. When the
+#' model meets its requirements, [precision_sampler()] draws from the same
+#' distribution and is usually faster for many draws of small models.
+#'
+#' Diffuse initial elements of \eqn{\alpha^+}{alpha+} are drawn at `inita`:
+#' the smoothed state is invariant to shifts of the initial state in the
+#' diffuse directions, so their value does not matter. Draws use a 64-bit
+#' Mersenne Twister seeded from R's random number generator, as in
+#' [mvrnorm()], so [set.seed()] makes them reproducible.
+#'
+#' @inheritParams kfas
+#' @param nsim Number of draws, a positive integer.
+#'
+#' @return A list with elements
+#' \describe{
+#'   \item{`draws`}{\eqn{n \times m \times}{n x m x} `nsim` array of draws:
+#'     `draws[, , s]` is one draw of the states, laid out like `alphahat`
+#'     in [kfas()].}
+#'   \item{`mean`}{\eqn{n \times m}{n x m} posterior mean
+#'     \eqn{E(\alpha_t | y)}, equal to `alphahat` from [kfas()].}
+#' }
+#'
+#' @references Durbin, J. and Koopman, S. J. (2002). A simple and
+#'   efficient simulation smoother for state space time series analysis.
+#'   *Biometrika*, 89(3), 603--615.
+#'
+#' @examples
+#' # Draws of the level of the Nile, with a diffuse initial level
+#' y <- matrix(as.numeric(Nile))
+#' set.seed(1)
+#' sim <- simulation_smoother(y, matrix(1), matrix(15099), matrix(1),
+#'                            matrix(1), matrix(1469.1), 0, matrix(0),
+#'                            matrix(1), nsim = 100)
+#' plot(as.numeric(Nile), ylab = "Flow")
+#' matlines(sim$draws[, 1, 1:10], col = "grey", lty = 1)
+#' lines(sim$mean[, 1])
+#'
+#' @export
+simulation_smoother <- function(
+  obs,
+  obsmat,
+  obsvar,
+  statemat,
+  vartrans,
+  statevar,
+  inita,
+  initp,
+  initpinf = NULL,
+  obsint = NULL,
+  stateint = NULL,
+  nsim = 1
+) {
+  if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
+  if (is.null(initpinf)) initpinf <- diffuse_none(vartrans)
+
+  x <- .Call(
+    "kfas0_simulate",
+    t(as_double(obs)),
+    as_double(obsmat),
+    as_double(obsvar),
+    as_double(statemat),
+    as_double(vartrans),
+    as_double(statevar),
+    as_double(inita),
+    as_double(initp),
+    as_double(initpinf),
+    intercept(obsint),
+    intercept(stateint),
+    nsim
+  )
+
+  list(draws = aperm(x[[1]], c(2, 1, 3)), mean = t(x[[2]]))
+}

@@ -278,7 +278,8 @@ static void kfas0_c(
     int *j_end,
     bool store,
     bool smoother,
-    bool disturbances
+    bool disturbances,
+    double *Finv_out
 ) {
   // Scalars required for BLAS/LAPACK routines
   const char *tr = "t";
@@ -295,7 +296,10 @@ static void kfas0_c(
 
   // Temporary storage for intermediate results
   // (R_alloc memory is reclaimed by R when the .Call returns)
-  double *Finv = (double *) R_alloc((size_t) (store ? n : 1) * p, sizeof(double));
+  // F^-1, or 0 for skipped observations (Finv_out if given, for the
+  // simulation smoother)
+  double *Finv = Finv_out != NULL ? Finv_out :
+    (double *) R_alloc((size_t) (store ? n : 1) * p, sizeof(double));
   double *m1   = (double *) R_alloc(m,     sizeof(double));
   double *mq   = (double *) R_alloc(m * q, sizeof(double));
   double *mm   = (double *) R_alloc(m * m, sizeof(double));
@@ -891,7 +895,8 @@ extern "C" SEXP kfas0(
     &j_end,
     true,
     run_smoother,
-    do_disturbances
+    do_disturbances,
+    NULL
   );
   REAL(loglik)[0] -= log_det_L(tm, n);
 
@@ -1100,9 +1105,339 @@ extern "C" SEXP kfas0_loglik(
     &j_end,
     false,
     false,
-    false
+    false,
+    NULL
   );
 
   return ScalarReal(loglik - log_det_L(tm, d.n));
 }
 
+// Square root S of a symmetric positive semi-definite k x k matrix, A = S S',
+// from its eigendecomposition (A may be singular)
+static void psd_sqrt(int k, double *A, double *S, const char *name) {
+  const char *lo = "l";
+  const char *jv = "v";
+  int info;
+  int lwork = 3 * k;
+  FC_LEN_T len_1 = 1;
+  double *w    = (double *) R_alloc(k,     sizeof(double));
+  double *work = (double *) R_alloc(lwork, sizeof(double));
+
+  memcpy(S, A, (size_t) k * k * sizeof(double));
+  F77_CALL(dsyev)(jv, lo, &k, S, &k, w, work, &lwork, &info, len_1, len_1);
+  if (info != 0) error("eigendecomposition of %s failed", name);
+
+  double tol = sqrt(DBL_EPSILON) * fmax(fabs(w[0]), fabs(w[k - 1]));
+  for (int j = 0; j < k; j++) {
+    if (w[j] < -tol) error("%s must be positive semi-definite", name);
+    double s = sqrt(fmax(w[j], 0.0));
+    for (int i = 0; i < k; i++) S[i + (j * k)] *= s;
+  }
+}
+
+// Smoothed state mean E(alpha | y) for a model with zero initial mean and
+// zero intercepts, adding a_t + P_t r_t-1 (+ P_inf,t r1_t-1 in the diffuse
+// phase) to alphahat. Only the mean recursions run: F, F^-1, M = K, P and
+// the diffuse quantities do not depend on y, so they come from a full run
+// of kfas0_c on the same model. a (m x n), v (p x n), att, r, r1 and m1
+// (m) are scratch.
+static void smooth_mean(
+    int n,
+    int p,
+    int m,
+    double *y,
+    double *Z,
+    int dZ,
+    double *T,
+    int dT,
+    double *F,
+    double *Finv,
+    double *K,
+    double *P,
+    double *Pinf,
+    double *Finf,
+    double *Minf,
+    int d_end,
+    double *a,
+    double *v,
+    double *att,
+    double *r,
+    double *r1,
+    double *m1,
+    double *alphahat
+) {
+  const char *tr = "t";
+  const char *nt = "n";
+  const char *up = "u";
+  int inc = 1;
+  double pos = 1.0;
+  double zero = 0.0;
+  double c;
+  FC_LEN_T len_1 = 1;
+
+  // Filter: the same updates as kfas0_c, for the mean only
+  memset(att, 0, m * sizeof(double));
+  for (ptrdiff_t t = 0; t < n; t++) {
+    double *Z_t = Z + (t * dZ);
+
+    memcpy(a + (t * m), att, m * sizeof(double));
+    for (int i = 0; i < p; i++) {
+      if (ISNAN(y[(t * p) + i])) continue;
+      double vi = y[(t * p) + i] - F77_CALL(ddot)(&m, Z_t + i, &p, att, &inc);
+      v[(t * p) + i] = vi;
+
+      if (Finf != NULL && Finf[(t * p) + i] > 0.0) {
+        c = vi / Finf[(t * p) + i];
+        F77_CALL(daxpy)(&m, &c, Minf + (t * m * p) + (i * m), &inc, att, &inc);
+      } else if (Finv[(t * p) + i] != 0.0) {
+        c = vi * Finv[(t * p) + i];
+        F77_CALL(daxpy)(&m, &c, K + (t * m * p) + (i * m), &inc, att, &inc);
+      }
+    }
+    F77_CALL(dgemv)(
+      nt, &m, &m,
+      &pos, T + (t * dT), &m, att, &inc,
+      &zero, m1, &inc, len_1);
+    memcpy(att, m1, m * sizeof(double));
+  }
+
+  // Smoother: r (and r1 in the diffuse phase) backwards, using the rank-1
+  // forms of L' r
+  memset(r, 0, m * sizeof(double));
+  memset(r1, 0, m * sizeof(double));
+  for (ptrdiff_t t = n - 1; t >= 0; t--) {
+    double *Z_t = Z + (t * dZ);
+    double *T_t = T + (t * dT);
+    bool in_diffuse = t < d_end;
+
+    F77_CALL(dgemv)(tr, &m, &m, &pos, T_t, &m, r, &inc, &zero, m1, &inc, len_1);
+    memcpy(r, m1, m * sizeof(double));
+    if (in_diffuse) {
+      F77_CALL(dgemv)(tr, &m, &m, &pos, T_t, &m, r1, &inc, &zero, m1, &inc, len_1);
+      memcpy(r1, m1, m * sizeof(double));
+    }
+
+    for (int i = p - 1; i >= 0; i--) {
+      if (ISNAN(y[(t * p) + i])) continue;
+      double *M_ti = K + (t * m * p) + (i * m);
+
+      if (in_diffuse && Finf[(t * p) + i] > 0.0) {
+        // With K_inf = M_inf / F_inf, K_0 = (M_* - K_inf F_*) / F_inf:
+        //   r1 = z (v / F_inf - K_0' r0 - K_inf' r1) + r1
+        //   r0 = r0 - z K_inf' r0
+        double Fi = Finf[(t * p) + i];
+        double *Mi = Minf + (t * m * p) + (i * m);
+        double Ki_r0 = F77_CALL(ddot)(&m, Mi, &inc, r, &inc) / Fi;
+        double K0_r0 = (F77_CALL(ddot)(&m, M_ti, &inc, r, &inc) -
+                        Ki_r0 * F[(t * p) + i]) / Fi;
+        double Ki_r1 = F77_CALL(ddot)(&m, Mi, &inc, r1, &inc) / Fi;
+        c = (v[(t * p) + i] / Fi) - K0_r0 - Ki_r1;
+        F77_CALL(daxpy)(&m, &c, Z_t + i, &p, r1, &inc);
+        c = -Ki_r0;
+        F77_CALL(daxpy)(&m, &c, Z_t + i, &p, r, &inc);
+        continue;
+      }
+      if (Finv[(t * p) + i] == 0.0) continue;
+
+      // r = r + F^-1 (v - M' r) z
+      c = Finv[(t * p) + i] *
+        (v[(t * p) + i] - F77_CALL(ddot)(&m, M_ti, &inc, r, &inc));
+      F77_CALL(daxpy)(&m, &c, Z_t + i, &p, r, &inc);
+    }
+
+    double *alphahat_t = alphahat + (t * m);
+    F77_CALL(daxpy)(&m, &pos, a + (t * m), &inc, alphahat_t, &inc);
+    F77_CALL(dsymv)(
+      up, &m,
+      &pos, P + (t * m * m), &m, r, &inc,
+      &pos, alphahat_t, &inc, len_1);
+    if (in_diffuse) {
+      F77_CALL(dsymv)(
+        up, &m,
+        &pos, Pinf + (t * m * m), &m, r1, &inc,
+        &pos, alphahat_t, &inc, len_1);
+    }
+  }
+}
+
+// Simulation smoother for the states (Durbin and Koopman, 2002): each draw
+// is alpha+ + E(alpha | y - y+) with (alpha+, y+) simulated from the model
+// unconditionally and the expectation computed with zero initial mean and
+// intercepts (the smoothed mean is affine in y, so this equals
+// alphahat - alphahat+ + alpha+). Diffuse initial elements are drawn at
+// a1: the smoothed mean is invariant to shifts in their directions. With
+// non-diagonal H the simulation is done in the transformed model.
+extern "C" SEXP kfas0_simulate(
+    SEXP y,
+    SEXP Z,
+    SEXP H,
+    SEXP T,
+    SEXP R,
+    SEXP Q,
+    SEXP a1,
+    SEXP P1,
+    SEXP P1inf,
+    SEXP dvec,
+    SEXP cvec,
+    SEXP nsim
+) {
+  model_dims d = check_model(y, Z, H, T, R, Q, a1, P1, P1inf, dvec, cvec);
+  int n = d.n;
+  int p = d.p;
+  int m = d.m;
+  int q = d.q;
+  int dT = d.dT;
+  int dR = d.dR;
+  int dQ = d.dQ;
+  int dc = d.dc;
+
+  int ns = asInteger(nsim);
+  if (ns == NA_INTEGER || ns < 1) error("nsim must be a positive integer");
+
+  // Scalars required for BLAS routines
+  const char *nt = "n";
+  int inc = 1;
+  double pos = 1.0;
+  double zero = 0.0;
+  FC_LEN_T len_1 = 1;
+  FC_LEN_T len_2 = 1;
+
+  transformed_model tm = transform_model(
+    d, subtract_intercept(d, REAL(y), dvec), REAL(Z), REAL(H));
+  double *T_ptr = REAL(T);
+  double *R_ptr = REAL(R);
+  double *Q_ptr = REAL(Q);
+  double *c_ptr = isNull(cvec) ? NULL : REAL(cvec);
+
+  // Full filter and state smoother on the data: alphahat is the posterior
+  // mean, and F, F^-1, K, P and the diffuse quantities are kept for the
+  // draws
+  size_t nm = (size_t) n * m;
+  size_t nmm = (size_t) n * m * m;
+  double *v    = (double *) R_alloc((size_t) n * p, sizeof(double));
+  double *F    = (double *) R_alloc((size_t) n * p, sizeof(double));
+  double *Finv = (double *) R_alloc((size_t) n * p, sizeof(double));
+  double *att  = (double *) R_alloc(nm,             sizeof(double));
+  double *Ptt  = (double *) R_alloc(nmm,            sizeof(double));
+  double *a    = (double *) R_alloc(nm + m,         sizeof(double));
+  double *P    = (double *) R_alloc(nmm + m * m,    sizeof(double));
+  double *K    = (double *) R_alloc(nmm / m * p,    sizeof(double));
+  double *r    = (double *) R_alloc(nm + m,         sizeof(double));
+  double *N    = (double *) R_alloc(nmm + m * m,    sizeof(double));
+  double *V    = (double *) R_alloc(nmm,            sizeof(double));
+  double loglik;
+  memcpy(a, REAL(a1), m * sizeof(double));
+  memcpy(P, REAL(P1), m * m * sizeof(double));
+  memset(r + nm, 0, m * sizeof(double));
+  memset(N + nmm, 0, m * m * sizeof(double));
+
+  double *Pinf = NULL;
+  double *Finf = NULL;
+  double *Minf = NULL;
+  int d_end = 0;
+  int j_end = 0;
+  if (any_nonzero(REAL(P1inf), (R_xlen_t) m * m)) {
+    Pinf = (double *) R_alloc(nmm + m * m,     sizeof(double));
+    Finf = (double *) R_alloc((size_t) n * p, sizeof(double));
+    Minf = (double *) R_alloc(nmm / m * p,    sizeof(double));
+    memcpy(Pinf, REAL(P1inf), m * m * sizeof(double));
+  }
+
+  SEXP mean   = PROTECT(allocMatrix(REALSXP, m, n));
+  SEXP draws  = PROTECT(alloc3DArray(REALSXP, m, n, ns));
+  SEXP result = PROTECT(allocVector(VECSXP, 2));
+  double *mean_ptr  = REAL(mean);
+  double *draws_ptr = REAL(draws);
+
+  kfas0_c(
+    n, p, m, q,
+    tm.y, tm.Z, tm.H, T_ptr, R_ptr, Q_ptr, c_ptr,
+    tm.dZ, tm.dH, dT, dR, dQ, dc,
+    v, F, att, Ptt, a, P, K, r, N,
+    NULL, NULL, NULL, NULL,
+    mean_ptr, V, &loglik,
+    Pinf, Finf, Minf, &d_end, &j_end,
+    true, true, false, Finv);
+
+  // Square root of P1, and R_t Q_t^1/2 for each transition (once if R and
+  // Q are time-invariant)
+  double *S1 = (double *) R_alloc(m * m, sizeof(double));
+  double *SQ = (double *) R_alloc(q * q, sizeof(double));
+  psd_sqrt(m, REAL(P1), S1, "P1");
+  int dRS = (dR != 0 || dQ != 0) ? m * q : 0;
+  int nRS = dRS ? n - 1 : 1;
+  double *RS = (double *) R_alloc((size_t) (nRS > 0 ? nRS : 1) * m * q,
+                                  sizeof(double));
+  for (ptrdiff_t t = 0; t < nRS; t++) {
+    psd_sqrt(q, Q_ptr + (t * dQ), SQ, "Q");
+    F77_CALL(dgemm)(
+      nt, nt, &m, &q, &q,
+      &pos, R_ptr + (t * dR), &m, SQ, &q,
+      &zero, RS + (t * dRS), &m, len_1, len_2);
+  }
+
+  // Per-draw scratch: normals, simulated y+ (in the transformed scale, as
+  // y - y+), and smooth_mean buffers
+  ptrdiff_t nz = m + ((ptrdiff_t) (n - 1) * q) + ((ptrdiff_t) n * p);
+  double *z   = (double *) R_alloc(nz,             sizeof(double));
+  double *yd  = (double *) R_alloc((size_t) n * p, sizeof(double));
+  double *m1  = (double *) R_alloc(m,              sizeof(double));
+  double *r0  = (double *) R_alloc(m,              sizeof(double));
+  double *r1  = (double *) R_alloc(m,              sizeof(double));
+  double *at  = (double *) R_alloc(m,              sizeof(double));
+
+  for (ptrdiff_t s = 0; s < ns; s++) {
+    double *x = draws_ptr + (s * nm);
+    rnorm_seeded(z, nz);
+    double *zq = z + m;
+    double *ze = z + m + ((ptrdiff_t) (n - 1) * q);
+
+    // alpha+_1 = a1 + P1^1/2 z, alpha+_t+1 = c_t + T_t alpha+_t + R_t eta_t
+    memcpy(x, REAL(a1), m * sizeof(double));
+    F77_CALL(dgemv)(nt, &m, &m, &pos, S1, &m, z, &inc, &pos, x, &inc, len_1);
+    for (ptrdiff_t t = 0; t < n - 1; t++) {
+      double *x_next = x + ((t + 1) * m);
+      F77_CALL(dgemv)(
+        nt, &m, &m,
+        &pos, T_ptr + (t * dT), &m, x + (t * m), &inc,
+        &zero, x_next, &inc, len_1);
+      F77_CALL(dgemv)(
+        nt, &m, &q,
+        &pos, RS + (t * dRS), &m, zq + (t * q), &inc,
+        &pos, x_next, &inc, len_1);
+      if (c_ptr != NULL) {
+        F77_CALL(daxpy)(&m, &pos, c_ptr + (t * dc), &inc, x_next, &inc);
+      }
+    }
+
+    // y - y+, with y+ = Z alpha+ + eps+ (eps+_i ~ N(0, H_ii)) at the
+    // observed elements
+    for (ptrdiff_t t = 0; t < n; t++) {
+      double *Z_t = tm.Z + (t * tm.dZ);
+      double *H_t = tm.H + (t * tm.dH);
+      for (int i = 0; i < p; i++) {
+        double yi = tm.y[(t * p) + i];
+        if (ISNAN(yi)) {
+          yd[(t * p) + i] = NA_REAL;
+          continue;
+        }
+        double h = H_t[(i * p) + i];
+        if (h < 0.0) error("H must be positive semi-definite");
+        yd[(t * p) + i] = yi -
+          F77_CALL(ddot)(&m, Z_t + i, &p, x + (t * m), &inc) -
+          sqrt(h) * ze[(t * p) + i];
+      }
+    }
+
+    smooth_mean(
+      n, p, m, yd, tm.Z, tm.dZ, T_ptr, dT,
+      F, Finv, K, P, Pinf, Finf, Minf, d_end,
+      att, v, at, r0, r1, m1, x);
+  }
+
+  SET_VECTOR_ELT(result, 0, draws);
+  SET_VECTOR_ELT(result, 1, mean);
+  UNPROTECT(3);
+
+  return result;
+}

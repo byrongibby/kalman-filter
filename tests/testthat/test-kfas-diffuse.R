@@ -1,13 +1,5 @@
 all_matrices <- c("Z", "H", "T", "R", "Q")
 
-# Partially diffuse model where series 2 does not load on the diffuse state,
-# so F_inf = 0 for it while the diffuse phase continues
-partial_no_loading <- function() {
-  mod <- make_diffuse(bivariate(), c(TRUE, FALSE, FALSE))
-  mod$Z[2, 1] <- 0
-  mod
-}
-
 cases <- list(
   local_level      = list(make_diffuse(local_level()), NULL),
   local_trend      = list(make_diffuse(local_trend()), NULL),
