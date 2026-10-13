@@ -13,7 +13,9 @@ kfas_loglik(
   statevar,
   inita,
   initp,
-  initpinf = NULL
+  initpinf = NULL,
+  obsint = NULL,
+  stateint = NULL
 )
 }
 \arguments{
@@ -46,6 +48,15 @@ non-diffuse part \eqn{P_{*}}): \eqn{m \times m}{m x m}.}
 \item{initpinf}{Diffuse part of the initial state variance,
 \eqn{P_\infty}: \eqn{m \times m}{m x m}, or \code{NULL} (the default)
 for no diffuse elements. See the Diffuse initialisation section.}
+
+\item{obsint}{Observation intercept \eqn{d}: a length-\eqn{p} vector,
+or an \eqn{n \times p}{n x p} matrix if time-varying. \code{NULL} (the
+default) for none.}
+
+\item{stateint}{State intercept \eqn{c}: a length-\eqn{m} vector, or
+an \eqn{n \times m}{n x m} matrix if time-varying, with row \eqn{t}
+entering \eqn{\alpha_{t+1}}{alpha[t+1]}. \code{NULL} (the default) for
+none.}
 }
 \value{
 The log-likelihood \eqn{\log p(y_1, \dots, y_n)}, a single
@@ -59,8 +70,9 @@ than O(\eqn{n m^2}) memory, and is faster, which matters when it is
 evaluated many times, for example inside an optimiser.
 }
 \details{
-The model, arguments, time-varying system matrices, non-diagonal
-\eqn{H} and missing observations are as described in \code{\link[=kfas]{kfas()}}.
+The model, arguments, time-varying system matrices, intercepts,
+non-diagonal \eqn{H}, missing observations and diffuse initialisation
+are as described in \code{\link[=kfas]{kfas()}}.
 }
 \examples{
 # Maximum likelihood estimation of the two variances of the local level

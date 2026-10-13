@@ -7,19 +7,20 @@
 #' needed.
 #'
 #' @section Model:
-#' \deqn{y_t = Z_t \alpha_t + \varepsilon_t, \qquad
-#'   \varepsilon_t \sim N(0, H_t)}{y[t] = Z[t] alpha[t] + eps[t],
+#' \deqn{y_t = d_t + Z_t \alpha_t + \varepsilon_t, \qquad
+#'   \varepsilon_t \sim N(0, H_t)}{y[t] = d[t] + Z[t] alpha[t] + eps[t],
 #'   eps[t] ~ N(0, H[t])}
-#' \deqn{\alpha_{t+1} = T_t \alpha_t + R_t \eta_t, \qquad
-#'   \eta_t \sim N(0, Q_t)}{alpha[t+1] = T[t] alpha[t] + R[t] eta[t],
+#' \deqn{\alpha_{t+1} = c_t + T_t \alpha_t + R_t \eta_t, \qquad
+#'   \eta_t \sim N(0, Q_t)}{alpha[t+1] = c[t] + T[t] alpha[t] + R[t] eta[t],
 #'   eta[t] ~ N(0, Q[t])}
 #' \deqn{\alpha_1 \sim N(a_1, P_{*} + \kappa P_\infty), \quad
 #'   \kappa \to \infty}{alpha[1] ~ N(a1, P1 + kappa P1inf), kappa -> infinity}
 #'
 #' for \eqn{t = 1, \dots, n}, with \eqn{p} observed series, \eqn{m}
-#' states and \eqn{q} state disturbances. \eqn{T_t}, \eqn{R_t} and
-#' \eqn{Q_t} take the state from time \eqn{t} to \eqn{t + 1}, as in
-#' Durbin and Koopman and the KFAS package.
+#' states and \eqn{q} state disturbances. \eqn{c_t}, \eqn{T_t},
+#' \eqn{R_t} and \eqn{Q_t} take the state from time \eqn{t} to
+#' \eqn{t + 1}, as in Durbin and Koopman and the KFAS package. The
+#' intercepts \eqn{d_t} and \eqn{c_t} are optional (zero by default).
 #'
 #' @section Time-varying system matrices:
 #' Each of `obsmat`, `obsvar`, `statemat`, `vartrans` and `statevar` may
@@ -27,6 +28,19 @@
 #' step, e.g. `obsmat` of dimension `c(p, m, n)` with `obsmat[, , t]` the
 #' value of \eqn{Z_t}. Time-invariant and time-varying matrices can be
 #' mixed freely. An input whose length matches neither form is an error.
+#'
+#' The intercepts `obsint` (\eqn{d_t}) and `stateint` (\eqn{c_t}) are
+#' likewise a single vector (time-invariant) or a matrix with one row per
+#' time step, e.g. `obsint` of dimension `c(n, p)` with `obsint[t, ]` the
+#' value of \eqn{d_t}, laid out like `obs`.
+#'
+#' @section Intercepts:
+#' The intercepts change only the means: the filter uses
+#' \eqn{v_t = y_t - d_t - Z_t a_t} and
+#' \eqn{a_{t+1} = c_t + T_t a_{t|t}}, and the variances, `K`, `r` and `N`
+#' do not depend on them. Regression effects on the observations can be
+#' given as `obsint` \eqn{= X_t \beta}{= X[t] beta} for known
+#' \eqn{\beta}{beta}, without adding them to the state.
 #'
 #' @section Non-diagonal H:
 #' The univariate treatment requires diagonal \eqn{H_t}. When any slice of
@@ -99,6 +113,13 @@
 #' @param initpinf Diffuse part of the initial state variance,
 #'   \eqn{P_\infty}: \eqn{m \times m}{m x m}, or `NULL` (the default)
 #'   for no diffuse elements. See the Diffuse initialisation section.
+#' @param obsint Observation intercept \eqn{d}: a length-\eqn{p} vector,
+#'   or an \eqn{n \times p}{n x p} matrix if time-varying. `NULL` (the
+#'   default) for none.
+#' @param stateint State intercept \eqn{c}: a length-\eqn{m} vector, or
+#'   an \eqn{n \times m}{n x m} matrix if time-varying, with row \eqn{t}
+#'   entering \eqn{\alpha_{t+1}}{alpha[t+1]}. `NULL` (the default) for
+#'   none.
 #' @param smoother If `TRUE` (the default), compute the smoothed state
 #'   `alphahat` and its variance `V`. Otherwise they are `NA`.
 #' @param disturbances If `TRUE` (the default), compute the smoothed
@@ -184,6 +205,13 @@
 #' fit_tv <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1), Q,
 #'                0, matrix(0), matrix(1))
 #'
+#' # A known level shift of -250 from 1899 onwards, given as an
+#' # observation intercept (an n x p matrix when time-varying)
+#' shift <- ifelse(seq_len(n) >= 29, -250, 0)
+#' fit_shift <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
+#'                   matrix(1469.1), 0, matrix(0), matrix(1),
+#'                   obsint = matrix(shift))
+#'
 #' # Filtering only
 #' filtered <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
 #'                  matrix(1469.1), 0, matrix(0), matrix(1),
@@ -200,6 +228,8 @@ kfas <- function(
   inita,
   initp,
   initpinf = NULL,
+  obsint = NULL,
+  stateint = NULL,
   smoother = TRUE,
   disturbances = TRUE
 ) {
@@ -217,6 +247,8 @@ kfas <- function(
     as_double(inita),
     as_double(initp),
     as_double(initpinf),
+    intercept(obsint),
+    intercept(stateint),
     as.logical(smoother),
     as.logical(disturbances)
   )
@@ -255,8 +287,9 @@ kfas <- function(
 #' than O(\eqn{n m^2}) memory, and is faster, which matters when it is
 #' evaluated many times, for example inside an optimiser.
 #'
-#' The model, arguments, time-varying system matrices, non-diagonal
-#' \eqn{H} and missing observations are as described in [kfas()].
+#' The model, arguments, time-varying system matrices, intercepts,
+#' non-diagonal \eqn{H}, missing observations and diffuse initialisation
+#' are as described in [kfas()].
 #'
 #' @inheritParams kfas
 #'
@@ -285,7 +318,9 @@ kfas_loglik <- function(
   statevar,
   inita,
   initp,
-  initpinf = NULL
+  initpinf = NULL,
+  obsint = NULL,
+  stateint = NULL
 ) {
   if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
   if (is.null(initpinf)) initpinf <- diffuse_none(vartrans)
@@ -300,7 +335,9 @@ kfas_loglik <- function(
     as_double(statevar),
     as_double(inita),
     as_double(initp),
-    as_double(initpinf)
+    as_double(initpinf),
+    intercept(obsint),
+    intercept(stateint)
   )
 }
 
@@ -308,6 +345,19 @@ kfas_loglik <- function(
 diffuse_none <- function(vartrans) {
   m <- if (is.null(dim(vartrans))) 1 else dim(vartrans)[1]
   matrix(0, m, m)
+}
+
+# Intercepts for the C code: NULL for none, otherwise doubles with each time
+# step's values contiguous (a time-varying intercept is given time by row,
+# like obs)
+intercept <- function(x) {
+  if (is.null(x)) return(NULL)
+  if (!is.numeric(x)) {
+    stop(deparse(substitute(x)), " must be numeric", call. = FALSE)
+  }
+  if (is.matrix(x)) x <- t(x)
+  storage.mode(x) <- "double"
+  x
 }
 
 # Convert to double storage, keeping dimensions; the C code reads doubles

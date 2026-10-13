@@ -49,10 +49,13 @@ typedef struct {
   int dT;
   int dR;
   int dQ;
+  int dd;     // d_t and c_t (intercepts), if given
+  int dc;
 } model_dims;
 
 static model_dims check_model(SEXP y, SEXP Z, SEXP H, SEXP T, SEXP R, SEXP Q,
-                              SEXP a1, SEXP P1, SEXP P1inf) {
+                              SEXP a1, SEXP P1, SEXP P1inf, SEXP dvec,
+                              SEXP cvec) {
   model_dims d;
 
   check_matrix(y, "y");
@@ -76,12 +79,40 @@ static model_dims check_model(SEXP y, SEXP Z, SEXP H, SEXP T, SEXP R, SEXP Q,
   check_double(P1, (R_xlen_t) d.m * d.m, "P1");
   check_double(P1inf, (R_xlen_t) d.m * d.m, "P1inf");
 
+  // Intercepts are optional (NULL)
+  d.dd = 0;
+  d.dc = 0;
+  if (!isNull(dvec)) {
+    check_double(dvec, -1, "d");
+    d.dd = stride(dvec, d.p, d.n, "d");
+  }
+  if (!isNull(cvec)) {
+    check_double(cvec, -1, "c");
+    d.dc = stride(cvec, d.m, d.n, "c");
+  }
+
   return d;
 }
 
 static bool any_nonzero(double *x, R_xlen_t len) {
   for (R_xlen_t i = 0; i < len; i++) if (x[i] != 0.0) return true;
   return false;
+}
+
+// Observation intercept: the filter runs on y - d, so v = y - d - Z a.
+// Returns y itself if there is no intercept.
+static double *subtract_intercept(model_dims d, double *y, SEXP dvec) {
+  if (isNull(dvec)) return y;
+
+  double *dv = REAL(dvec);
+  double *yd = (double *) R_alloc((size_t) d.n * d.p, sizeof(double));
+  for (ptrdiff_t t = 0; t < d.n; t++) {
+    for (int i = 0; i < d.p; i++) {
+      yd[(t * d.p) + i] = y[(t * d.p) + i] - dv[(t * d.dd) + i];
+    }
+  }
+
+  return yd;
 }
 
 // The univariate treatment needs diagonal H. Otherwise each H_t (restricted
@@ -248,11 +279,13 @@ static void kfas0_c(
     double *T,
     double *R,
     double *Q,
+    double *cvec,
     int dZ,
     int dH,
     int dT,
     int dR,
     int dQ,
+    int dc,
     double *v,
     double *F,
     double *att,
@@ -456,6 +489,9 @@ static void kfas0_c(
       nt, &m, &m,
       &pos, T_t, &m, att + (t * s_m), &inc,
       &zero, a + ((t + 1) * s_m), &inc, len_1);
+    if (cvec != NULL) {
+      F77_CALL(daxpy)(&m, &pos, cvec + (t * dc), &inc, a + ((t + 1) * s_m), &inc);
+    }
     if (varying_RQ) compute_RQR(m, q, R + (t * dR), Q + (t * dQ), mq, RQR);
     memcpy(P + ((t + 1) * s_mm), RQR, m * m * sizeof(double));
     F77_CALL(dgemm)(
@@ -743,10 +779,12 @@ extern "C" SEXP kfas0(
     SEXP a1,
     SEXP P1,
     SEXP P1inf,
+    SEXP dvec,
+    SEXP cvec,
     SEXP smoother,
     SEXP disturbances
 ) {
-  model_dims d = check_model(y, Z, H, T, R, Q, a1, P1, P1inf);
+  model_dims d = check_model(y, Z, H, T, R, Q, a1, P1, P1inf, dvec, cvec);
   int n = d.n;
   int p = d.p;
   int m = d.m;
@@ -818,7 +856,8 @@ extern "C" SEXP kfas0(
   double zero = 0.0;
   FC_LEN_T len_1 = 1;
 
-  transformed_model tm = transform_model(d, y_ptr, Z_ptr, H_ptr);
+  transformed_model tm = transform_model(
+    d, subtract_intercept(d, y_ptr, dvec), Z_ptr, H_ptr);
   bool diagonal = tm.diagonal;
   double *L = tm.L;
   int dL = tm.dL;
@@ -853,11 +892,13 @@ extern "C" SEXP kfas0(
     T_ptr,
     R_ptr,
     Q_ptr,
+    isNull(cvec) ? NULL : REAL(cvec),
     tm.dZ,
     tm.dH,
     d.dT,
     d.dR,
     d.dQ,
+    d.dc,
     v_ptr,
     F_ptr,
     att_ptr,
@@ -1012,13 +1053,16 @@ extern "C" SEXP kfas0_loglik(
     SEXP Q,
     SEXP a1,
     SEXP P1,
-    SEXP P1inf
+    SEXP P1inf,
+    SEXP dvec,
+    SEXP cvec
 ) {
-  model_dims d = check_model(y, Z, H, T, R, Q, a1, P1, P1inf);
+  model_dims d = check_model(y, Z, H, T, R, Q, a1, P1, P1inf, dvec, cvec);
   int p = d.p;
   int m = d.m;
 
-  transformed_model tm = transform_model(d, REAL(y), REAL(Z), REAL(H));
+  transformed_model tm = transform_model(
+    d, subtract_intercept(d, REAL(y), dvec), REAL(Z), REAL(H));
 
   // Single-step filter buffers
   double *v   = (double *) R_alloc(p,     sizeof(double));
@@ -1057,11 +1101,13 @@ extern "C" SEXP kfas0_loglik(
     REAL(T),
     REAL(R),
     REAL(Q),
+    isNull(cvec) ? NULL : REAL(cvec),
     tm.dZ,
     tm.dH,
     d.dT,
     d.dR,
     d.dQ,
+    d.dc,
     v,
     F,
     att,

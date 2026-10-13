@@ -3,8 +3,8 @@
 Kalman filter and smoother for linear Gaussian state space models, in
 C-style C++ on top of BLAS and LAPACK.
 
-    y_t       = Z_t alpha_t + eps_t,       eps_t ~ N(0, H_t)
-    alpha_t+1 = T_t alpha_t + R_t eta_t,   eta_t ~ N(0, Q_t)
+    y_t       = d_t + Z_t alpha_t + eps_t,       eps_t ~ N(0, H_t)
+    alpha_t+1 = c_t + T_t alpha_t + R_t eta_t,   eta_t ~ N(0, Q_t)
 
 `kfas()` runs the filter, the state smoother and the disturbance smoother
 using the univariate treatment of multivariate series (Durbin & Koopman,
@@ -12,6 +12,8 @@ using the univariate treatment of multivariate series (Durbin & Koopman,
 
 - time-varying system matrices: any of Z, H, T, R and Q can be an array
   with one slice per time step;
+- intercepts `d_t` and `c_t` in the observation and state equations,
+  time-invariant or time-varying;
 - non-diagonal H, through a Cholesky transformation of the model;
 - missing observations (`NA` in the data), in any pattern;
 - exact diffuse initialisation for states with unknown starting values;

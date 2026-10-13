@@ -14,6 +14,8 @@ kfas(
   inita,
   initp,
   initpinf = NULL,
+  obsint = NULL,
+  stateint = NULL,
   smoother = TRUE,
   disturbances = TRUE
 )
@@ -48,6 +50,15 @@ non-diffuse part \eqn{P_{*}}): \eqn{m \times m}{m x m}.}
 \item{initpinf}{Diffuse part of the initial state variance,
 \eqn{P_\infty}: \eqn{m \times m}{m x m}, or \code{NULL} (the default)
 for no diffuse elements. See the Diffuse initialisation section.}
+
+\item{obsint}{Observation intercept \eqn{d}: a length-\eqn{p} vector,
+or an \eqn{n \times p}{n x p} matrix if time-varying. \code{NULL} (the
+default) for none.}
+
+\item{stateint}{State intercept \eqn{c}: a length-\eqn{m} vector, or
+an \eqn{n \times m}{n x m} matrix if time-varying, with row \eqn{t}
+entering \eqn{\alpha_{t+1}}{alpha[t+1]}. \code{NULL} (the default) for
+none.}
 
 \item{smoother}{If \code{TRUE} (the default), compute the smoothed state
 \code{alphahat} and its variance \code{V}. Otherwise they are \code{NA}.}
@@ -122,19 +133,20 @@ needed.
 }
 \section{Model}{
 
-\deqn{y_t = Z_t \alpha_t + \varepsilon_t, \qquad
-  \varepsilon_t \sim N(0, H_t)}{y[t] = Z[t] alpha[t] + eps[t],
+\deqn{y_t = d_t + Z_t \alpha_t + \varepsilon_t, \qquad
+  \varepsilon_t \sim N(0, H_t)}{y[t] = d[t] + Z[t] alpha[t] + eps[t],
   eps[t] ~ N(0, H[t])}
-\deqn{\alpha_{t+1} = T_t \alpha_t + R_t \eta_t, \qquad
-  \eta_t \sim N(0, Q_t)}{alpha[t+1] = T[t] alpha[t] + R[t] eta[t],
+\deqn{\alpha_{t+1} = c_t + T_t \alpha_t + R_t \eta_t, \qquad
+  \eta_t \sim N(0, Q_t)}{alpha[t+1] = c[t] + T[t] alpha[t] + R[t] eta[t],
   eta[t] ~ N(0, Q[t])}
 \deqn{\alpha_1 \sim N(a_1, P_{*} + \kappa P_\infty), \quad
   \kappa \to \infty}{alpha[1] ~ N(a1, P1 + kappa P1inf), kappa -> infinity}
 
 for \eqn{t = 1, \dots, n}, with \eqn{p} observed series, \eqn{m}
-states and \eqn{q} state disturbances. \eqn{T_t}, \eqn{R_t} and
-\eqn{Q_t} take the state from time \eqn{t} to \eqn{t + 1}, as in
-Durbin and Koopman and the KFAS package.
+states and \eqn{q} state disturbances. \eqn{c_t}, \eqn{T_t},
+\eqn{R_t} and \eqn{Q_t} take the state from time \eqn{t} to
+\eqn{t + 1}, as in Durbin and Koopman and the KFAS package. The
+intercepts \eqn{d_t} and \eqn{c_t} are optional (zero by default).
 }
 
 \section{Time-varying system matrices}{
@@ -144,6 +156,21 @@ be a single matrix (time-invariant) or an array with one slice per time
 step, e.g. \code{obsmat} of dimension \code{c(p, m, n)} with \code{obsmat[, , t]} the
 value of \eqn{Z_t}. Time-invariant and time-varying matrices can be
 mixed freely. An input whose length matches neither form is an error.
+
+The intercepts \code{obsint} (\eqn{d_t}) and \code{stateint} (\eqn{c_t}) are
+likewise a single vector (time-invariant) or a matrix with one row per
+time step, e.g. \code{obsint} of dimension \code{c(n, p)} with \code{obsint[t, ]} the
+value of \eqn{d_t}, laid out like \code{obs}.
+}
+
+\section{Intercepts}{
+
+The intercepts change only the means: the filter uses
+\eqn{v_t = y_t - d_t - Z_t a_t} and
+\eqn{a_{t+1} = c_t + T_t a_{t|t}}, and the variances, \code{K}, \code{r} and \code{N}
+do not depend on them. Regression effects on the observations can be
+given as \code{obsint} \eqn{= X_t \beta}{= X[t] beta} for known
+\eqn{\beta}{beta}, without adding them to the state.
 }
 
 \section{Non-diagonal H}{
@@ -225,6 +252,13 @@ Q <- array(1469.1, c(1, 1, n))
 Q[1, 1, 29:n] <- 2 * 1469.1
 fit_tv <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1), Q,
                0, matrix(0), matrix(1))
+
+# A known level shift of -250 from 1899 onwards, given as an
+# observation intercept (an n x p matrix when time-varying)
+shift <- ifelse(seq_len(n) >= 29, -250, 0)
+fit_shift <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
+                  matrix(1469.1), 0, matrix(0), matrix(1),
+                  obsint = matrix(shift))
 
 # Filtering only
 filtered <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
