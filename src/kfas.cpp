@@ -1,14 +1,19 @@
-// Kalman Filter
+// Kalman Filter (multivariate treatment)
 // Byron Botha 2025
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 #include <Rinternals.h>
 #include <R_ext/BLAS.h>
 #include <R_ext/Lapack.h>
+#include "kfas_utils.h"
 
-static int filter(
+// Filter and smoother with y_t processed as a vector (Durbin & Koopman,
+// sections 4.3-4.5). H may be non-diagonal. Outputs are laid out as in
+// kfas0_c, except F is p x p per time step and K is P_t Z_t'.
+static void kfas_c(
     int n,
     int p,
     int m,
@@ -19,112 +24,11 @@ static int filter(
     double *T,
     double *R,
     double *Q,
-    double *v,
-    double *F,
-    double *att,
-    double *Ptt,
-    double *a,
-    double *P,
-    double *K
-) {
-  // Parameters required by BLAS/LAPACK
-  const char *tr = "t";
-  const char *nt = "n";
-  int inc = 1;
-  double pos = 1.0;
-  double neg = -1.0;
-  double zero = 0.0;
-  int *ipiv = (int *) R_alloc(p, sizeof(int));
-  int info = 0;
-
-  // Temporary storage for intermediate results
-  double *ZP = (double *) R_alloc(p * m, sizeof(double));
-  double *FinvZP = (double *) R_alloc(p * m, sizeof(double));
-  double *RQ = (double *) R_alloc(m * q, sizeof(double));
-  double *TPtt = (double *) R_alloc(m * m, sizeof(double));
-
-  // String lengths for cstring args
-  FC_LEN_T len_1 = 1; 
-  FC_LEN_T len_2 = 1;
-
-  for (int t = 0; t < n; t++) {
-    // Innovate
-    memcpy(v + (t * p), y + (t * p), p * sizeof(double));
-    memcpy(F + (t * p) * p, H, p * p * sizeof(double));
-    F77_CALL(dgemv)(
-      nt, &p, &m,
-      &neg, Z, &p, a + (t * m), &inc,
-      &pos, v + (t * p), &inc, len_1);
-    F77_CALL(dgemm)(
-      nt, nt, &p, &m, &m,
-      &pos, Z, &p, P + (t * m) * m, &m,
-      &zero, ZP, &p, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, tr, &p, &p, &m,
-      &pos, ZP, &p, Z, &p,
-      &pos, F + (t * p) * p, &p, len_1, len_2);
-
-    // Update
-    memcpy(FinvZP, ZP, p * m * sizeof(double));
-    memcpy(att + (t * m), a + (t * m), m * sizeof(double));
-    memcpy(Ptt + (t * m * m), P + (t * m) * m, m * m * sizeof(double));
-    F77_CALL(dgesv)(
-      &p, &m,
-      F + (t * p) * p, &p, ipiv,
-      FinvZP, &p, &info);
-    if (info != 0) return -1;
-    F77_CALL(dgemv)(
-      tr, &p, &m,
-      &pos, FinvZP, &p, v + (t * p), &inc,
-      &pos, att + (t * m), &inc, len_1);
-    F77_CALL(dgemm)(
-      tr, nt, &m, &m, &p,
-      &neg, FinvZP, &p, ZP, &p,
-      &pos, Ptt + (t * m) * m, &m, len_1, len_2);
-    
-    // Kalman gain
-    F77_CALL(dgemm)(
-      nt, tr, &m, &p, &m,
-      &pos, T, &m, FinvZP, &p,
-      &zero, K + (t * m) * p, &m, len_1, len_2);
-
-    // Predict
-    F77_CALL(dgemv)(
-      nt, &m, &m,
-      &pos, T, &m, att + (t * m), &inc,
-      &zero, a + ((t + 1) * m), &inc, len_1);
-    F77_CALL(dgemm)(
-      nt, nt, &m, &q, &q,
-      &pos, R, &m, Q, &q,
-      &zero, RQ, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, tr, &m, &m, &q,
-      &pos, RQ, &m, R, &m,
-      &zero, P + ((t + 1) * m) * m, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, nt, &m, &m, &m,
-      &pos, T, &m, Ptt + (t * m) * m, &m,
-      &zero, TPtt, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, tr, &m, &m, &m,
-      &pos, TPtt, &m, T, &m,
-      &pos, P + ((t + 1) * m) * m, &m, len_1, len_2);
-  }
-
-  return 0;
-}
-
-static int smooth(
-    int n,
-    int p,
-    int m,
-    int q,
-    double *y,
-    double *Z,
-    double *H,
-    double *T,
-    double *R,
-    double *Q,
+    int dZ,
+    int dH,
+    int dT,
+    int dR,
+    int dQ,
     double *v,
     double *F,
     double *att,
@@ -134,149 +38,272 @@ static int smooth(
     double *K,
     double *r,
     double *N,
+    double *epshat,
+    double *V_eps,
+    double *etahat,
+    double *V_eta,
     double *alphahat,
-    double *V
+    double *V,
+    bool smoother,
+    bool disturbances
 ) {
-  // Parameters required by BLAS/LAPACK
+  // Scalars required for BLAS/LAPACK routines
   const char *tr = "t";
   const char *nt = "n";
+  const char *up = "u";
+  const char *lf = "l";
+  const char *rt = "r";
   int inc = 1;
+  int info;
   double pos = 1.0;
   double neg = -1.0;
   double zero = 0.0;
-  int *ipiv = (int *) R_alloc(p, sizeof(int));
-  int info = 0;
-
-  // Temporary storage for intermediary results (filter)
-  double *ZP = (double *) R_alloc(p * m, sizeof(double));
-  double *FinvZ = (double *) R_alloc((p * m) * n, sizeof(double));
-  double *FinvZP = (double *) R_alloc(p * m, sizeof(double));
-  double *RQ = (double *) R_alloc(m * q, sizeof(double));
-  double *TPtt = (double *) R_alloc(m * m, sizeof(double));
-
-  // Temporary storage for intermediary results (smoother)
-  double *L = (double *) R_alloc(m * m, sizeof(double));
-  double *LN = (double *) R_alloc(m * m, sizeof(double));
-  double *PN = (double *) R_alloc(m * m, sizeof(double));
 
   // String lengths for cstring args
-  FC_LEN_T len_1 = 1; 
+  FC_LEN_T len_1 = 1;
   FC_LEN_T len_2 = 1;
 
-  for (int t = 0; t < n; t++) {
-    // Innovate
-    memcpy(v + (t * p), y + (t * p), p * sizeof(double));
-    memcpy(F + (t * p) * p, H, p * p * sizeof(double));
+  // Kept from the filter for the smoother
+  // (R_alloc memory is reclaimed by R when the .Call returns)
+  double *U     = (double *) R_alloc((size_t) n * p * p, sizeof(double));
+  double *Finvv = (double *) R_alloc((size_t) n * p,     sizeof(double));
+  double *FinvZ = (double *) R_alloc((size_t) n * p * m, sizeof(double));
+  double *Kg    = (double *) R_alloc((size_t) n * m * p, sizeof(double));
+
+  // Temporary storage for intermediate results
+  double *G    = (double *) R_alloc(p * m, sizeof(double));
+  double *L    = (double *) R_alloc(m * m, sizeof(double));
+  double *mm   = (double *) R_alloc(m * m, sizeof(double));
+  double *mp   = (double *) R_alloc(m * p, sizeof(double));
+  double *pp_1 = (double *) R_alloc(p * p, sizeof(double));
+  double *pp_2 = (double *) R_alloc(p * p, sizeof(double));
+  double *p1   = (double *) R_alloc(p,     sizeof(double));
+  double *mq   = (double *) R_alloc(m * q, sizeof(double));
+  double *qm_1 = (double *) R_alloc(q * m, sizeof(double));
+  double *qm_2 = mq;
+  double *RQR  = (double *) R_alloc(m * m, sizeof(double));
+
+  // RQR' and QR' are computed once unless R or Q vary over time
+  bool varying_RQ = (dR != 0 || dQ != 0);
+  if (!varying_RQ) {
+    compute_RQR(m, q, R, Q, mq, RQR);
+    compute_QR(m, q, R, Q, qm_1);
+  }
+
+  // Filter
+  for (ptrdiff_t t = 0; t < n; t++) {
+    double *Z_t   = Z + (t * dZ);
+    double *H_t   = H + (t * dH);
+    double *T_t   = T + (t * dT);
+    double *a_t   = a + (t * m);
+    double *P_t   = P + (t * m * m);
+    double *v_t   = v + (t * p);
+    double *F_t   = F + (t * p * p);
+    double *K_t   = K + (t * m * p);
+    double *U_t   = U + (t * p * p);
+    double *w_t   = Finvv + (t * p);
+    double *FZ_t  = FinvZ + (t * p * m);
+    double *Kg_t  = Kg + (t * m * p);
+    double *att_t = att + (t * m);
+    double *Ptt_t = Ptt + (t * m * m);
+
+    // Innovation v = y - Z a (4.24)
+    memcpy(v_t, y + (t * p), p * sizeof(double));
     F77_CALL(dgemv)(
       nt, &p, &m,
-      &neg, Z, &p, a + (t * m), &inc,
-      &pos, v + (t * p), &inc, len_1);
-    F77_CALL(dgemm)(
-      nt, nt, &p, &m, &m,
-      &pos, Z, &p, P + (t * m) * m, &m,
-      &zero, ZP, &p, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, tr, &p, &p, &m,
-      &pos, ZP, &p, Z, &p,
-      &pos, F + (t * p) * p, &p, len_1, len_2);
+      &neg, Z_t, &p, a_t, &inc,
+      &pos, v_t, &inc, len_1);
 
-    // Update
-    memcpy(FinvZ + (t * p) * m, Z, p * m * sizeof(double));
-    memcpy(att + (t * m), a + (t * m), m * sizeof(double));
-    memcpy(Ptt + (t * m * m), P + (t * m) * m, m * m * sizeof(double));
-    F77_CALL(dgesv)(
-      &p, &m,
-      F + (t * p) * p, &p, ipiv,
-      FinvZ + (t * p) * m, &p, &info);
-    if (info != 0) return -1;
-    F77_CALL(dgemm)(
-      nt, nt, &p, &m, &m,
-      &pos, FinvZ + (t * p) * m, &p, P + (t * m) * m, &m,
-      &zero, FinvZP, &p, len_1, len_2);
-    F77_CALL(dgemv)(
-      tr, &p, &m,
-      &pos, FinvZP, &p, v + (t * p), &inc,
-      &pos, att + (t * m), &inc, len_1);
-    F77_CALL(dgemm)(
-      tr, nt, &m, &m, &p,
-      &neg, FinvZP, &p, ZP, &p,
-      &pos, Ptt + (t * m) * m, &m, len_1, len_2);
-    
-    // Kalman gain
+    // M = P Z' (returned as K), F = Z M + H
     F77_CALL(dgemm)(
       nt, tr, &m, &p, &m,
-      &pos, T, &m, FinvZP, &p,
-      &zero, K + (t * m) * p, &m, len_1, len_2);
+      &pos, P_t, &m, Z_t, &p,
+      &zero, K_t, &m, len_1, len_2);
+    memcpy(F_t, H_t, p * p * sizeof(double));
+    F77_CALL(dgemm)(
+      nt, nt, &p, &p, &m,
+      &pos, Z_t, &p, K_t, &m,
+      &pos, F_t, &p, len_1, len_2);
 
-    // Predict
-    F77_CALL(dgemv)(
-      nt, &m, &m,
-      &pos, T, &m, att + (t * m), &inc,
-      &zero, a + ((t + 1) * m), &inc, len_1);
-    F77_CALL(dgemm)(
-      nt, nt, &m, &q, &q,
-      &pos, R, &m, Q, &q,
-      &zero, RQ, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, tr, &m, &m, &q,
-      &pos, RQ, &m, R, &m,
-      &zero, P + ((t + 1) * m) * m, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, nt, &m, &m, &m,
-      &pos, T, &m, Ptt + (t * m) * m, &m,
-      &zero, TPtt, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, tr, &m, &m, &m,
-      &pos, TPtt, &m, T, &m,
-      &pos, P + ((t + 1) * m) * m, &m, len_1, len_2);
-  }
+    // F = U'U (Cholesky), then F^-1 v and F^-1 Z
+    memcpy(U_t, F_t, p * p * sizeof(double));
+    F77_CALL(dpotrf)(up, &p, U_t, &p, &info, len_1);
+    if (info != 0) {
+      error("F is not positive definite at time %lld; observations with no "
+            "information are only supported by the univariate treatment",
+            (long long) t + 1);
+    }
+    memcpy(w_t, v_t, p * sizeof(double));
+    F77_CALL(dpotrs)(up, &p, &inc, U_t, &p, w_t, &p, &info, len_1);
+    memcpy(FZ_t, Z_t, p * m * sizeof(double));
+    F77_CALL(dpotrs)(up, &p, &m, U_t, &p, FZ_t, &p, &info, len_1);
 
-  // Smooth
-  for (int t = n - 1; t >= 0; t--) {
-    memcpy(L, T, m * m * sizeof(double));
-    F77_CALL(dgemm)(
-      nt, nt, &m, &m, &p,
-      &neg, K + (t * m) * p, &m, Z, &p,
-      &pos, L, &m, len_1, len_2);
+    // G = F^-1 Z P = (M F^-1)'
+    F77_CALL(dsymm)(
+      rt, up, &p, &m,
+      &pos, P_t, &m, FZ_t, &p,
+      &zero, G, &p, len_1, len_1);
 
-    F77_CALL(dgemv)(
-      tr, &m, &m,
-      &pos, L, &m, r + ((t + 1) * m), &inc,
-      &zero, r + (t * m), &inc, len_1);
+    // Update (4.26): att = a + M F^-1 v, Ptt = P - M F^-1 M'
+    memcpy(att_t, a_t, m * sizeof(double));
     F77_CALL(dgemv)(
       tr, &p, &m,
-      &pos, FinvZ + (t * p) * m, &p, v + (t * p), &inc,
-      &pos, r + (t * m), &inc, len_1);
+      &pos, G, &p, v_t, &inc,
+      &pos, att_t, &inc, len_1);
+    memcpy(Ptt_t, P_t, m * m * sizeof(double));
     F77_CALL(dgemm)(
-      tr, nt, &m, &m, &p,
-      &pos, FinvZ + (t * p) * m, &p, Z, &p,
-      &zero, N + (t * m) * m, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      tr, nt, &m, &m, &m,
-      &pos, L, &m, N + ((t + 1) * m) * m, &m,
-      &zero, LN, &m, len_1, len_2);
-    F77_CALL(dgemm)(
-      nt, nt, &m, &m, &m,
-      &pos, LN, &m, L, &m,
-      &pos, N + (t * m) * m, &m, len_1, len_2);
+      nt, nt, &m, &m, &p,
+      &neg, K_t, &m, G, &p,
+      &pos, Ptt_t, &m, len_1, len_2);
 
-    memcpy(alphahat + (t * m), a + (t * m), m * sizeof(double));
-    memcpy(V + (t * m) * m, P + (t * m) * m, m * m * sizeof(double));
+    // Kalman gain K = T M F^-1 (4.24), kept for the smoother
+    F77_CALL(dgemm)(
+      nt, tr, &m, &p, &m,
+      &pos, T_t, &m, G, &p,
+      &zero, Kg_t, &m, len_1, len_2);
+
+    // Predict (4.27)
     F77_CALL(dgemv)(
       nt, &m, &m,
-      &pos, P + (t * m) * m, &m, r + (t * m), &inc,
-      &pos, alphahat + (t * m), &inc, len_1);
+      &pos, T_t, &m, att_t, &inc,
+      &zero, a + ((t + 1) * m), &inc, len_1);
+    if (varying_RQ) compute_RQR(m, q, R + (t * dR), Q + (t * dQ), mq, RQR);
+    memcpy(P + ((t + 1) * m * m), RQR, m * m * sizeof(double));
     F77_CALL(dgemm)(
       nt, nt, &m, &m, &m,
-      &pos, P + (t * m) * m, &m, N + (t * m) * m, &m,
-      &zero, PN, &m, len_1, len_2);
+      &pos, T_t, &m, Ptt_t, &m,
+      &zero, mm, &m, len_1, len_2);
     F77_CALL(dgemm)(
-      nt, nt, &m, &m, &m,
-      &neg, PN, &m, P + (t * m) * m, &m,
-      &pos, V + (t * m) * m, &m, len_1, len_2);
+      nt, tr, &m, &m, &m,
+      &pos, mm, &m, T_t, &m,
+      &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
   }
 
-  return 0;
+  if (!smoother && !disturbances) return;
+
+  if (smoother) {
+    // Initialise alphahat = a, and V = P
+    memcpy(alphahat, a, (size_t) n * m * sizeof(double));
+    memcpy(V, P, (size_t) n * m * m * sizeof(double));
+  }
+
+  // Smooth. r and N at index t + 1 are r_t and N_t in Durbin & Koopman's
+  // notation; index t receives r_t-1 and N_t-1.
+  for (ptrdiff_t t = n - 1; t >= 0; t--) {
+    double *Z_t    = Z + (t * dZ);
+    double *H_t    = H + (t * dH);
+    double *T_t    = T + (t * dT);
+    double *Q_t    = Q + (t * dQ);
+    double *P_t    = P + (t * m * m);
+    double *U_t    = U + (t * p * p);
+    double *w_t    = Finvv + (t * p);
+    double *FZ_t   = FinvZ + (t * p * m);
+    double *Kg_t   = Kg + (t * m * p);
+    double *r_t    = r + (t * m);
+    double *r_next = r + ((t + 1) * m);
+    double *N_t    = N + (t * m * m);
+    double *N_next = N + ((t + 1) * m * m);
+
+    if (disturbances) {
+      // Smoothed eta disturbances (4.69)
+      if (varying_RQ) compute_QR(m, q, R + (t * dR), Q_t, qm_1);
+      memcpy(V_eta + (t * q * q), Q_t, q * q * sizeof(double));
+      F77_CALL(dgemv)(
+        nt, &q, &m,
+        &pos, qm_1, &q, r_next, &inc,
+        &zero, etahat + (t * q), &inc, len_1);
+      F77_CALL(dgemm)(
+        nt, nt, &q, &m, &m,
+        &pos, qm_1, &q, N_next, &m,
+        &zero, qm_2, &q, len_1, len_2);
+      F77_CALL(dgemm)(
+        nt, tr, &q, &q, &m,
+        &neg, qm_2, &q, qm_1, &q,
+        &pos, V_eta + (t * q * q), &q, len_1, len_2);
+
+      // Smoothed epsilon disturbances (4.69): H (F^-1 v - K' r)
+      memcpy(p1, w_t, p * sizeof(double));
+      F77_CALL(dgemv)(
+        tr, &m, &p,
+        &neg, Kg_t, &m, r_next, &inc,
+        &pos, p1, &inc, len_1);
+      F77_CALL(dsymv)(
+        up, &p,
+        &pos, H_t, &p, p1, &inc,
+        &zero, epshat + (t * p), &inc, len_1);
+
+      // Var(eps | y) = H - H (F^-1 + K' N K) H, diagonal only. dpotri
+      // sets the upper triangle of F^-1; mirror it to the lower.
+      memcpy(pp_1, U_t, p * p * sizeof(double));
+      F77_CALL(dpotri)(up, &p, pp_1, &p, &info, len_1);
+      for (int j = 0; j < p; j++) {
+        for (int i = j + 1; i < p; i++) pp_1[i + (j * p)] = pp_1[j + (i * p)];
+      }
+      F77_CALL(dgemm)(
+        nt, nt, &m, &p, &m,
+        &pos, N_next, &m, Kg_t, &m,
+        &zero, mp, &m, len_1, len_2);
+      F77_CALL(dgemm)(
+        tr, nt, &p, &p, &m,
+        &pos, Kg_t, &m, mp, &m,
+        &pos, pp_1, &p, len_1, len_2);
+      F77_CALL(dsymm)(
+        lf, up, &p, &p,
+        &pos, H_t, &p, pp_1, &p,
+        &zero, pp_2, &p, len_1, len_1);
+      for (int i = 0; i < p; i++) {
+        V_eps[(t * p) + i] = H_t[(i * p) + i] -
+          F77_CALL(ddot)(&p, pp_2 + i, &p, H_t + (i * p), &inc);
+      }
+    }
+
+    // L = T - K Z
+    memcpy(L, T_t, m * m * sizeof(double));
+    F77_CALL(dgemm)(
+      nt, nt, &m, &m, &p,
+      &neg, Kg_t, &m, Z_t, &p,
+      &pos, L, &m, len_1, len_2);
+
+    // r_t-1 = Z' F^-1 v + L' r_t (4.38)
+    F77_CALL(dgemv)(
+      tr, &m, &m,
+      &pos, L, &m, r_next, &inc,
+      &zero, r_t, &inc, len_1);
+    F77_CALL(dgemv)(
+      tr, &p, &m,
+      &pos, Z_t, &p, w_t, &inc,
+      &pos, r_t, &inc, len_1);
+
+    // N_t-1 = Z' F^-1 Z + L' N_t L (4.42)
+    F77_CALL(dgemm)(
+      tr, nt, &m, &m, &m,
+      &pos, L, &m, N_next, &m,
+      &zero, mm, &m, len_1, len_2);
+    F77_CALL(dgemm)(
+      nt, nt, &m, &m, &m,
+      &pos, mm, &m, L, &m,
+      &zero, N_t, &m, len_1, len_2);
+    F77_CALL(dgemm)(
+      tr, nt, &m, &m, &p,
+      &pos, Z_t, &p, FZ_t, &p,
+      &pos, N_t, &m, len_1, len_2);
+
+    if (smoother) {
+      // Smoothed state (4.39, 4.43)
+      F77_CALL(dsymv)(
+        up, &m,
+        &pos, P_t, &m, r_t, &inc,
+        &pos, alphahat + (t * m), &inc, len_1);
+      F77_CALL(dgemm)(
+        nt, nt, &m, &m, &m,
+        &pos, P_t, &m, N_t, &m,
+        &zero, mm, &m, len_1, len_2);
+      F77_CALL(dgemm)(
+        nt, nt, &m, &m, &m,
+        &neg, mm, &m, P_t, &m,
+        &pos, V + (t * m * m), &m, len_1, len_2);
+    }
+  }
 }
 
 extern "C" SEXP kfas(
@@ -287,15 +314,35 @@ extern "C" SEXP kfas(
     SEXP R,
     SEXP Q,
     SEXP a1,
-    SEXP P1
+    SEXP P1,
+    SEXP smoother,
+    SEXP disturbances
 ) {
+  check_matrix(y, "y");
+  check_matrix(R, "R");
+  check_double(Z, -1, "Z");
+  check_double(H, -1, "H");
+  check_double(T, -1, "T");
+  check_double(Q, -1, "Q");
+
   SEXP dim_y = PROTECT(getAttrib(y, R_DimSymbol));
   SEXP dim_R = PROTECT(getAttrib(R, R_DimSymbol));
-  
+
   int p = INTEGER(dim_y)[0];
   int n = INTEGER(dim_y)[1];
   int m = INTEGER(dim_R)[0];
   int q = INTEGER(dim_R)[1];
+
+  int dZ = stride(Z, p * m, n, "Z");
+  int dH = stride(H, p * p, n, "H");
+  int dT = stride(T, m * m, n, "T");
+  int dR = stride(R, m * q, n, "R");
+  int dQ = stride(Q, q * q, n, "Q");
+  check_double(a1, m, "a1");
+  check_double(P1, (R_xlen_t) m * m, "P1");
+
+  bool do_smoother = asLogical(smoother) == TRUE;
+  bool do_disturbances = asLogical(disturbances) == TRUE;
 
   SEXP v        = PROTECT(allocMatrix(REALSXP, p    , n));
   SEXP F        = PROTECT(allocMatrix(REALSXP, p * p, n));
@@ -306,62 +353,76 @@ extern "C" SEXP kfas(
   SEXP K        = PROTECT(allocMatrix(REALSXP, m * p, n));
   SEXP r        = PROTECT(allocMatrix(REALSXP, m    , n + 1));
   SEXP N        = PROTECT(allocMatrix(REALSXP, m * m, n + 1));
+  SEXP epshat   = PROTECT(allocMatrix(REALSXP, p    , n));
+  SEXP V_eps    = PROTECT(allocMatrix(REALSXP, p    , n));
+  SEXP etahat   = PROTECT(allocMatrix(REALSXP, q    , n));
+  SEXP V_eta    = PROTECT(allocMatrix(REALSXP, q * q, n));
   SEXP alphahat = PROTECT(allocMatrix(REALSXP, m    , n));
   SEXP V        = PROTECT(allocMatrix(REALSXP, m * m, n));
 
-  int list_length = 11;
+  int list_length = 15;
 
   SEXP result = PROTECT(allocVector(VECSXP, list_length));
 
-  double *y_ptr        = REAL(y);
-  double *Z_ptr        = REAL(Z);
-  double *H_ptr        = REAL(H);
-  double *T_ptr        = REAL(T);
-  double *R_ptr        = REAL(R);
-  double *Q_ptr        = REAL(Q);
-  double *a1_ptr       = REAL(a1);
-  double *P1_ptr       = REAL(P1);
-  double *v_ptr        = REAL(v);
-  double *F_ptr        = REAL(F);
-  double *att_ptr      = REAL(att);
-  double *Ptt_ptr      = REAL(Ptt);
-  double *a_ptr        = REAL(a);
-  double *P_ptr        = REAL(P);
-  double *K_ptr        = REAL(K);
-  double *r_ptr        = REAL(r);
-  double *N_ptr        = REAL(N);
-  double *alphahat_ptr = REAL(alphahat);
-  double *V_ptr        = REAL(V);
+  double *r_ptr = REAL(r);
+  double *N_ptr = REAL(N);
 
-  memcpy(a_ptr, a1_ptr, m * sizeof(double));
-  memcpy(P_ptr, P1_ptr, m * m * sizeof(double));
+  memcpy(REAL(a), REAL(a1), m * sizeof(double));
+  memcpy(REAL(P), REAL(P1), m * m * sizeof(double));
 
-  memset(r_ptr + n * m, 0, m * sizeof(double));
-  memset(N_ptr + n * (m * m), 0, m * m * sizeof(double));
+  memset(r_ptr + ((ptrdiff_t) n * m), 0, m * sizeof(double));
+  memset(N_ptr + ((ptrdiff_t) n * m * m), 0, m * m * sizeof(double));
 
-  if (smooth(
+  kfas_c(
     n,
     p,
     m,
     q,
-    y_ptr,
-    Z_ptr,
-    H_ptr,
-    T_ptr,
-    R_ptr,
-    Q_ptr,
-    v_ptr,
-    F_ptr,
-    att_ptr,
-    Ptt_ptr,
-    a_ptr,
-    P_ptr,
-    K_ptr,
+    REAL(y),
+    REAL(Z),
+    REAL(H),
+    REAL(T),
+    REAL(R),
+    REAL(Q),
+    dZ,
+    dH,
+    dT,
+    dR,
+    dQ,
+    REAL(v),
+    REAL(F),
+    REAL(att),
+    REAL(Ptt),
+    REAL(a),
+    REAL(P),
+    REAL(K),
     r_ptr,
     N_ptr,
-    alphahat_ptr,
-    V_ptr
-  ) != 0) printf("Filter failed!\n");
+    REAL(epshat),
+    REAL(V_eps),
+    REAL(etahat),
+    REAL(V_eta),
+    REAL(alphahat),
+    REAL(V),
+    do_smoother,
+    do_disturbances
+  );
+
+  // Outputs that were not requested are NA rather than uninitialised
+  if (!do_smoother) {
+    fill_na(REAL(alphahat), XLENGTH(alphahat));
+    fill_na(REAL(V), XLENGTH(V));
+  }
+  if (!do_disturbances) {
+    fill_na(REAL(epshat), XLENGTH(epshat));
+    fill_na(REAL(V_eps), XLENGTH(V_eps));
+    fill_na(REAL(etahat), XLENGTH(etahat));
+    fill_na(REAL(V_eta), XLENGTH(V_eta));
+  }
+  if (!do_smoother && !do_disturbances) {
+    fill_na(r_ptr, XLENGTH(r));
+    fill_na(N_ptr, XLENGTH(N));
+  }
 
   SET_VECTOR_ELT(result,  0, v);
   SET_VECTOR_ELT(result,  1, F);
@@ -372,10 +433,14 @@ extern "C" SEXP kfas(
   SET_VECTOR_ELT(result,  6, K);
   SET_VECTOR_ELT(result,  7, r);
   SET_VECTOR_ELT(result,  8, N);
-  SET_VECTOR_ELT(result,  9, alphahat);
-  SET_VECTOR_ELT(result, 10, V);
+  SET_VECTOR_ELT(result,  9, epshat);
+  SET_VECTOR_ELT(result, 10, V_eps);
+  SET_VECTOR_ELT(result, 11, etahat);
+  SET_VECTOR_ELT(result, 12, V_eta);
+  SET_VECTOR_ELT(result, 13, alphahat);
+  SET_VECTOR_ELT(result, 14, V);
 
-  UNPROTECT(14);
+  UNPROTECT(18);
 
   return result;
 }

@@ -68,14 +68,28 @@ run_kfas <- function(mod, y) {
 }
 
 # The multivariate routine in src/kfas.cpp is not exported
-run_kfas_multivariate <- function(mod, y) {
-  x <- .Call("kfas", t(y), mod$Z, mod$H, mod$T, mod$R, mod$Q, mod$a1,
-             mod$P1, PACKAGE = "kfilter")
+run_kfas_multivariate <- function(mod, y, smoother = TRUE,
+                                  disturbances = TRUE) {
+  x <- .Call("kfas", t(y), mod$Z, mod$H, mod$T, mod$R, mod$Q,
+             as.double(mod$a1), mod$P1, smoother, disturbances,
+             PACKAGE = "kfilter")
   n <- nrow(y)
-  m <- ncol(mod$Z)
-  list(a = t(x[[5]]), att = t(x[[3]]), P = array(x[[6]], c(m, m, n + 1)),
-       Ptt = array(x[[4]], c(m, m, n)), alphahat = t(x[[10]]),
-       V = array(x[[11]], c(m, m, n)))
+  p <- ncol(y)
+  m <- dim(mod$R)[1]
+  q <- dim(mod$R)[2]
+  list(v = t(x[[1]]), F = array(x[[2]], c(p, p, n)), att = t(x[[3]]),
+       Ptt = array(x[[4]], c(m, m, n)), a = t(x[[5]]),
+       P = array(x[[6]], c(m, m, n + 1)), K = array(x[[7]], c(m, p, n)),
+       r = t(x[[8]]), N = array(x[[9]], c(m, m, n + 1)),
+       epshat = t(x[[10]]), V_eps = array(x[[11]], c(p, n)),
+       etahat = t(x[[12]]), V_eta = array(x[[13]], c(q, q, n)),
+       alphahat = t(x[[14]]), V = array(x[[15]], c(m, m, n)))
+}
+
+# Replace H in a p = 2 model with a non-diagonal one
+full_H <- function(mod) {
+  mod$H <- matrix(c(1, 0.6, 0.6, 2), 2)
+  mod
 }
 
 run_reference <- function(mod, y) {

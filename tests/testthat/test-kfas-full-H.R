@@ -3,11 +3,6 @@
 # the transform; v, F and K are reported in the Cholesky-transformed scale;
 # epsilon disturbances are reported in the original scale.
 
-full_H <- function(mod) {
-  mod$H <- matrix(c(1, 0.6, 0.6, 2), 2)
-  mod
-}
-
 # KFAS reports v, F, epshat and V_eps in the scale of its LDL transform
 # H = C D C'. Since L = C D^(1/2), the Cholesky scale divides v by
 # sqrt(D) and F by D; the original-scale disturbances follow from the
