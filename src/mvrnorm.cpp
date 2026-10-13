@@ -1,39 +1,34 @@
+// C++ headers must come before R headers, which define macros such as length
+#include <random>
 #include <assert.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <time.h>
 #include <Rinternals.h>
 #include <R_ext/BLAS.h>
 #include <R_ext/Lapack.h>
-#include "pcg_basic.h"
+#include <R_ext/Random.h>
 
-// Box-Muller transformation.
-static void rnorm(pcg32_random_t* rng, double *z, int n) {
+// Seed from R's RNG so set.seed() makes draws reproducible
+static uint64_t seed_from_r(void) {
+  GetRNGstate();
+  uint64_t hi = (uint64_t) (unif_rand() * 4294967296.0);
+  uint64_t lo = (uint64_t) (unif_rand() * 4294967296.0);
+  PutRNGstate();
+
+  return (hi << 32) | lo;
+}
+
+// Standard normal draws
+static void rnorm(std::mt19937_64 *rng, double *z, int n) {
   assert(rng);
   assert(z);
   assert(n > 0);
 
-  int i;
-  double u1, u2;
+  std::normal_distribution<double> norm(0.0, 1.0);
 
-  // Floating point values in the range [0,1) that have been
-  // rounded down to the nearest multiple of 1/2^32.
-  u1 = ldexp(pcg32_random_r(rng), -32);
-  u2 = ldexp(pcg32_random_r(rng), -32);
-
-  for (i = 0; i < n - 2; i += 2) {
-    z[i]     = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
-    z[i + 1] = sqrt(-2.0 * log(u1)) * sin(2.0 * M_PI * u2);
-
-    u1 = ldexp(pcg32_random_r(rng), -32);
-    u2 = ldexp(pcg32_random_r(rng), -32);
-  }
-
-  z[i - 1] = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
-  if (n - i == 2) z[i] = sqrt(-2.0 * log(u1)) * sin(2.0 * M_PI * u2);
+  for (int i = 0; i < n; i++) z[i] = norm(*rng);
 }
 
 int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
@@ -42,9 +37,8 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
   assert(mu);
   assert(sigma);
 
-  // Initialise PCG random number generator
-  pcg32_random_t rng;
-  pcg32_srandom_r(&rng, time(NULL), (intptr_t)&rng);
+  // Initialise Mersenne Twister random number generator
+  std::mt19937_64 rng(seed_from_r());
 
   // Vars required for BLAS/LAPACK routines
   const char *nt = "n";
