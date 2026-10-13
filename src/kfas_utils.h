@@ -6,6 +6,8 @@
 
 #include <Rinternals.h>
 
+#define LOG_2PI 1.837877066409345483560659472811  // log(2 pi)
+
 // State disturbance variance RQR' (mq is m x q scratch)
 void compute_RQR(int m, int q, double *R, double *Q, double *mq,
                  double *RQR);

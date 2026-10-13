@@ -111,6 +111,14 @@
 #'     \eqn{E(\alpha_t | y)}.}
 #'   \item{`V`}{\eqn{m \times m \times n}{m x m x n} smoothed state
 #'     variances \eqn{Var(\alpha_t | y)}.}
+#'   \item{`logLik`}{The Gaussian log-likelihood
+#'     \eqn{\log p(y_1, \dots, y_n)}, including the
+#'     \eqn{-\frac{1}{2} \log 2\pi}{-log(2 pi) / 2} constant per
+#'     observation. Uninformative observations (see above) do not
+#'     contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
+#'     Cholesky transform, so it is the likelihood of the original
+#'     \eqn{y}. Computed by the filter, whatever `smoother` and
+#'     `disturbances` are.}
 #' }
 #'
 #' @references Durbin, J. and Koopman, S. J. (2012). *Time Series Analysis
@@ -134,10 +142,16 @@
 #' fit_tv <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1), Q,
 #'                0, matrix(1e7))
 #'
-#' # Filtering only
-#' filtered <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
-#'                  matrix(1469.1), 0, matrix(1e7),
-#'                  smoother = FALSE, disturbances = FALSE)
+#' # Maximum likelihood estimation of the two variances, filtering only.
+#' # (The large initp approximates a diffuse initial state, so the first
+#' # observation's contribution is dominated by it.)
+#' negloglik <- function(log_var) {
+#'   -kfas(y, matrix(1), matrix(exp(log_var[1])), matrix(1), matrix(1),
+#'         matrix(exp(log_var[2])), 0, matrix(1e7),
+#'         smoother = FALSE, disturbances = FALSE)$logLik
+#' }
+#' fit_ml <- optim(c(log(var(y)), log(var(y))), negloglik)
+#' exp(fit_ml$par)
 #'
 #' @export
 kfas <- function(
@@ -192,6 +206,7 @@ kfas <- function(
   result$V_eta <- array(x[[13]], c(q, q, n))
   result$alphahat <- t(x[[14]])
   result$V <-  array(x[[15]], c(m, m, n))
+  result$logLik <- x[[16]]
 
   return(result)
 }

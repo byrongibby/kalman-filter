@@ -1,6 +1,7 @@
 // Kalman Filter (multivariate treatment)
 // Byron Botha 2025
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -44,6 +45,7 @@ static void kfas_c(
     double *V_eta,
     double *alphahat,
     double *V,
+    double *loglik,
     bool smoother,
     bool disturbances
 ) {
@@ -89,6 +91,9 @@ static void kfas_c(
     compute_RQR(m, q, R, Q, mq, RQR);
     compute_QR(m, q, R, Q, qm_1);
   }
+
+  // Log-likelihood (7.2): sum of log det F + v' F^-1 v
+  double ll_sum = 0.0;
 
   // Filter
   for (ptrdiff_t t = 0; t < n; t++) {
@@ -138,6 +143,10 @@ static void kfas_c(
     memcpy(FZ_t, Z_t, p * m * sizeof(double));
     F77_CALL(dpotrs)(up, &p, &m, U_t, &p, FZ_t, &p, &info, len_1);
 
+    // log det F = 2 sum log diag(U)
+    for (int i = 0; i < p; i++) ll_sum += 2.0 * log(U_t[(i * p) + i]);
+    ll_sum += F77_CALL(ddot)(&p, v_t, &inc, w_t, &inc);
+
     // G = F^-1 Z P = (M F^-1)'
     F77_CALL(dsymm)(
       rt, up, &p, &m,
@@ -178,6 +187,8 @@ static void kfas_c(
       &pos, mm, &m, T_t, &m,
       &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
   }
+
+  *loglik = -0.5 * ((double) n * p * LOG_2PI + ll_sum);
 
   if (!smoother && !disturbances) return;
 
@@ -359,8 +370,9 @@ extern "C" SEXP kfas(
   SEXP V_eta    = PROTECT(allocMatrix(REALSXP, q * q, n));
   SEXP alphahat = PROTECT(allocMatrix(REALSXP, m    , n));
   SEXP V        = PROTECT(allocMatrix(REALSXP, m * m, n));
+  SEXP loglik   = PROTECT(allocVector(REALSXP, 1));
 
-  int list_length = 15;
+  int list_length = 16;
 
   SEXP result = PROTECT(allocVector(VECSXP, list_length));
 
@@ -404,6 +416,7 @@ extern "C" SEXP kfas(
     REAL(V_eta),
     REAL(alphahat),
     REAL(V),
+    REAL(loglik),
     do_smoother,
     do_disturbances
   );
@@ -439,8 +452,9 @@ extern "C" SEXP kfas(
   SET_VECTOR_ELT(result, 12, V_eta);
   SET_VECTOR_ELT(result, 13, alphahat);
   SET_VECTOR_ELT(result, 14, V);
+  SET_VECTOR_ELT(result, 15, loglik);
 
-  UNPROTECT(18);
+  UNPROTECT(19);
 
   return result;
 }

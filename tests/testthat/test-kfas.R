@@ -11,7 +11,8 @@ test_that("kfas returns every output with the documented dimensions", {
 
   n <- 25; p <- 2; m <- 3; q <- 2
   expect_named(out, c("v", "F", "att", "Ptt", "a", "P", "K", "r", "N",
-                      "epshat", "V_eps", "etahat", "V_eta", "alphahat", "V"))
+                      "epshat", "V_eps", "etahat", "V_eta", "alphahat", "V",
+                      "logLik"))
   expect_equal(dim(out$v), c(n, p))
   expect_equal(dim(out$F), c(p, n))
   expect_equal(dim(out$att), c(n, m))

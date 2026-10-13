@@ -83,7 +83,8 @@ run_kfas_multivariate <- function(mod, y, smoother = TRUE,
        r = t(x[[8]]), N = array(x[[9]], c(m, m, n + 1)),
        epshat = t(x[[10]]), V_eps = array(x[[11]], c(p, n)),
        etahat = t(x[[12]]), V_eta = array(x[[13]], c(q, q, n)),
-       alphahat = t(x[[14]]), V = array(x[[15]], c(m, m, n)))
+       alphahat = t(x[[14]]), V = array(x[[15]], c(m, m, n)),
+       logLik = x[[16]])
 }
 
 # Replace H in a p = 2 model with a non-diagonal one

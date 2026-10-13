@@ -69,6 +69,7 @@ static void kfas0_c(
     double *V_eta,
     double *alphahat,
     double *V,
+    double *loglik,
     bool smoother,
     bool disturbances
 ) {
@@ -105,6 +106,11 @@ static void kfas0_c(
 
   // Initialise v = y
   memcpy(v, y, (size_t) n * p * sizeof(double));
+
+  // Log-likelihood (7.2): sum of log(F) + v^2 / F over informative
+  // observations, with the constant added at the end
+  double ll_sum = 0.0;
+  ptrdiff_t n_obs = 0;
   
   // Filter
   for (ptrdiff_t t = 0; t < n; t++) {
@@ -145,6 +151,9 @@ static void kfas0_c(
 
       // K matrix (6.13), K = M / F
       Finv[(t * p) + i] = 1.0 / F[(t * p) + i];
+      ll_sum += log(F[(t * p) + i]) +
+        v[(t * p) + i] * v[(t * p) + i] * Finv[(t * p) + i];
+      n_obs++;
       F77_CALL(dscal)(
         &m, Finv + (t * p) + i, K + (t * m * p) + (i * m), &inc);
 
@@ -175,6 +184,8 @@ static void kfas0_c(
       &pos, mm, &m, T_t, &m,
       &pos, P + ((t + 1) * m * m), &m, len_1, len_2);
   }
+
+  *loglik = -0.5 * ((double) n_obs * LOG_2PI + ll_sum);
 
   if (smoother || disturbances) {
     if (smoother) {
@@ -333,8 +344,9 @@ extern "C" SEXP kfas0(
   SEXP V_eta    = PROTECT(allocMatrix(REALSXP, q * q, n));
   SEXP alphahat = PROTECT(allocMatrix(REALSXP, m    , n));
   SEXP V        = PROTECT(allocMatrix(REALSXP, m * m, n));
+  SEXP loglik   = PROTECT(allocVector(REALSXP, 1));
 
-  int list_length = 15;
+  int list_length = 16;
 
   SEXP result = PROTECT(allocVector(VECSXP, list_length));
 
@@ -453,9 +465,19 @@ extern "C" SEXP kfas0(
     V_eta_ptr,
     alphahat_ptr,
     V_ptr,
+    REAL(loglik),
     run_smoother,
     do_disturbances
   );
+
+  if (!diagonal) {
+    // Jacobian of y* = L^-1 y: log f(y) = log f(y*) - sum_t log det L_t
+    double log_det = 0.0;
+    for (ptrdiff_t k = 0; k < (dH ? n : 1); k++) {
+      for (int i = 0; i < p; i++) log_det += log(L[(k * p * p) + (i * p) + i]);
+    }
+    REAL(loglik)[0] -= dH ? log_det : n * log_det;
+  }
 
   if (!diagonal && do_disturbances) {
     // Return the epsilon disturbances in the original scale, using
@@ -509,8 +531,9 @@ extern "C" SEXP kfas0(
   SET_VECTOR_ELT(result, 12, V_eta);
   SET_VECTOR_ELT(result, 13, alphahat);
   SET_VECTOR_ELT(result, 14, V);
+  SET_VECTOR_ELT(result, 15, loglik);
 
-  UNPROTECT(18);
+  UNPROTECT(19);
 
   return result;
 }

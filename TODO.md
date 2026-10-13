@@ -9,13 +9,6 @@ Koopman (2012):
 
 ## Features
 
-- [ ] **Log-likelihood.** Needed for maximum likelihood estimation of
-  model parameters. In the univariate treatment:
-  `logLik = -0.5 * sum(log(2 pi) + log(F_ti) + v_ti^2 / F_ti)` over
-  observations with `F_ti > 0`, plus `-sum(log(diag(L_t)))` when H is
-  non-diagonal and the model is Cholesky-transformed (Jacobian of
-  `y* = L^-1 y`).
-
 - [ ] **Missing observations.** `NA` in `y` currently turns every later
   output into `NA`. In the univariate treatment, skip the update for each
   missing `y_ti`: no filter update (`K = 0`, `Finv = 0`), so the smoother

@@ -90,6 +90,14 @@ disturbances \eqn{E(\varepsilon_t | y)}.}
 \eqn{E(\alpha_t | y)}.}
 \item{\code{V}}{\eqn{m \times m \times n}{m x m x n} smoothed state
 variances \eqn{Var(\alpha_t | y)}.}
+\item{\code{logLik}}{The Gaussian log-likelihood
+\eqn{\log p(y_1, \dots, y_n)}, including the
+\eqn{-\frac{1}{2} \log 2\pi}{-log(2 pi) / 2} constant per
+observation. Uninformative observations (see above) do not
+contribute. For non-diagonal \eqn{H} it includes the Jacobian of the
+Cholesky transform, so it is the likelihood of the original
+\eqn{y}. Computed by the filter, whatever \code{smoother} and
+\code{disturbances} are.}
 }
 }
 \description{
@@ -170,10 +178,16 @@ Q[1, 1, 29:n] <- 2 * 1469.1
 fit_tv <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1), Q,
                0, matrix(1e7))
 
-# Filtering only
-filtered <- kfas(y, matrix(1), matrix(15099), matrix(1), matrix(1),
-                 matrix(1469.1), 0, matrix(1e7),
-                 smoother = FALSE, disturbances = FALSE)
+# Maximum likelihood estimation of the two variances, filtering only.
+# (The large initp approximates a diffuse initial state, so the first
+# observation's contribution is dominated by it.)
+negloglik <- function(log_var) {
+  -kfas(y, matrix(1), matrix(exp(log_var[1])), matrix(1), matrix(1),
+        matrix(exp(log_var[2])), 0, matrix(1e7),
+        smoother = FALSE, disturbances = FALSE)$logLik
+}
+fit_ml <- optim(c(log(var(y)), log(var(y))), negloglik)
+exp(fit_ml$par)
 
 }
 \references{
