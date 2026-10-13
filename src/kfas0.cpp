@@ -85,7 +85,7 @@ static int kfas0_c(
         F77_CALL(dgemm)(
           nt, nt, &inc, &m, &m,
           &pos, Z + i, &p, Ptt + (t * m * m), &m,
-          &zero, m1, &m, len_1, len_2);
+          &zero, m1, &inc, len_1, len_2);
         F77_CALL(dgemv)(
           nt, &inc, &m,
           &pos, m1, &inc, Z + i, &p,
@@ -121,7 +121,7 @@ static int kfas0_c(
         &zero, mq, &m, len_1, len_2);
       F77_CALL(dgemm)(
         nt, tr, &m, &m, &q,
-        &pos, mq, &m, R, &q,
+        &pos, mq, &m, R, &m,
         &zero, P + ((t + 1) * m * m), &m, len_1, len_2);
       F77_CALL(dgemm)(
         nt, nt, &m, &m, &m,

@@ -78,7 +78,7 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
 extern "C" SEXP mvrnorm(SEXP n, SEXP mu, SEXP sigma) {
   SEXP dim_sigma = PROTECT(getAttrib(sigma, R_DimSymbol));
   
-  int len = INTEGER(n)[0];
+  int len = asInteger(n);
   int dim = INTEGER(dim_sigma)[0];
 
   SEXP x = PROTECT(allocMatrix(REALSXP, dim, len));

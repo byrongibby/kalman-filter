@@ -99,7 +99,7 @@ static int filter(
       &zero, RQ, &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, tr, &m, &m, &q,
-      &pos, RQ, &m, R, &q,
+      &pos, RQ, &m, R, &m,
       &zero, P + ((t + 1) * m) * m, &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, nt, &m, &m, &m,
@@ -219,7 +219,7 @@ static int smooth(
       &zero, RQ, &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, tr, &m, &m, &q,
-      &pos, RQ, &m, R, &q,
+      &pos, RQ, &m, R, &m,
       &zero, P + ((t + 1) * m) * m, &m, len_1, len_2);
     F77_CALL(dgemm)(
       nt, nt, &m, &m, &m,
