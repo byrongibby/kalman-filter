@@ -88,11 +88,10 @@ static int kfas0_c(
       
       for (int i = 0; i < p; i++) {
         // Innovation (6.13)
-        memcpy(F + (t * p) + i, H + (i * p) + i, sizeof(double));
-        F77_CALL(dgemv)(
-          nt, &inc, &m,
-          &neg, Z + i, &p, att + (t * m), &inc,
-          &pos, v + (t * p) + i, &inc, len_1);
+        v[(t * p) + i] -= F77_CALL(ddot)(
+          &m, Z + i, &p, att + (t * m), &inc);
+        F[(t * p) + i] = H[(i * p) + i];
+
         // M = Ptt Z_i' (stored in K), F = H_i + Z_i M
         F77_CALL(dsymv)(
           up, &m,
@@ -107,10 +106,9 @@ static int kfas0_c(
           &m, Finv + (t * p) + i, K + (t * m * p) + (i * m), &inc);
 
         // Update state (6.12)
-        F77_CALL(dgemv)(
-          nt, &m, &inc,
-          &pos, K + (t * m * p) + (i * m), &m, v + (t * p) + i, &inc,
-          &pos, att + (t * m), &inc, len_1);
+        F77_CALL(daxpy)(
+          &m, v + (t * p) + i, K + (t * m * p) + (i * m), &inc,
+          att + (t * m), &inc);
         c = neg * F[(t * p) + i];
         F77_CALL(dger)(
           &m, &m,
@@ -214,8 +212,8 @@ static int kfas0_c(
 
       if (smoother) {
         // Smoothed state (4.44)
-        F77_CALL(dgemv)(
-          nt, &m, &m,
+        F77_CALL(dsymv)(
+          up, &m,
           &pos, P + (t * m * m), &m, r + (t * m), &inc,
           &pos, alphahat + (t * m), &inc, len_1);
         F77_CALL(dgemm)(
