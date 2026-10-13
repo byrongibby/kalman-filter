@@ -3,4 +3,5 @@
 export(kfas)
 export(kfas_loglik)
 export(mvrnorm)
+export(precision_sampler)
 useDynLib(kfilter)

@@ -4,6 +4,7 @@
 #ifndef KFAS_UTILS_H
 #define KFAS_UTILS_H
 
+#include <stddef.h>
 #include <Rinternals.h>
 
 #define LOG_2PI 1.837877066409345483560659472811  // log(2 pi)
@@ -27,5 +28,9 @@ void check_double(SEXP x, R_xlen_t size, const char *name);
 void check_matrix(SEXP x, const char *name);
 
 void fill_na(double *x, R_xlen_t len);
+
+// n standard normal draws from a Mersenne Twister seeded from R's RNG, so
+// set.seed() makes them reproducible (defined in mvrnorm.cpp)
+void rnorm_seeded(double *z, ptrdiff_t n);
 
 #endif

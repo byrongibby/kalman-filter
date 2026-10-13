@@ -32,6 +32,12 @@ static void rnorm(std::mt19937_64 *rng, double *z, ptrdiff_t n) {
   for (ptrdiff_t i = 0; i < n; i++) z[i] = norm(*rng);
 }
 
+// Standard normal draws from a Mersenne Twister seeded from R's RNG
+void rnorm_seeded(double *z, ptrdiff_t n) {
+  std::mt19937_64 rng(seed_from_r());
+  rnorm(&rng, z, n);
+}
+
 static void mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
   assert(n > 0);
   assert(d > 0);
@@ -55,11 +61,8 @@ static void mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
     lo, &d, C, &d, &info, len_1);
   if (info != 0) error("sigma is not positive definite");
 
-  // Initialise Mersenne Twister random number generator
-  std::mt19937_64 rng(seed_from_r());
-
   double *z = (double *) R_alloc((size_t) d * n, sizeof(double));
-  rnorm(&rng, z, (ptrdiff_t) d * n);
+  rnorm_seeded(z, (ptrdiff_t) d * n);
 
   for (ptrdiff_t i = 0; i < n; i++) memcpy(x + i * d, mu, d * sizeof(double));
 

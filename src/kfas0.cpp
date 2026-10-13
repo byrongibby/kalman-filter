@@ -11,6 +11,7 @@
 #include <R_ext/BLAS.h>
 #include <R_ext/Lapack.h>
 #include "kfas_utils.h"
+#include "kfas_model.h"
 
 // True if every one of the nH p x p slices of H is diagonal
 static bool is_diagonal(double *H, int p, int nH) {
@@ -38,24 +39,8 @@ static void cholesky(double *H, int p, int nH, double *L) {
   }
 }
 
-// Dimensions and time strides of a validated model
-typedef struct {
-  int n;
-  int p;
-  int m;
-  int q;
-  int dZ;
-  int dH;
-  int dT;
-  int dR;
-  int dQ;
-  int dd;     // d_t and c_t (intercepts), if given
-  int dc;
-} model_dims;
-
-static model_dims check_model(SEXP y, SEXP Z, SEXP H, SEXP T, SEXP R, SEXP Q,
-                              SEXP a1, SEXP P1, SEXP P1inf, SEXP dvec,
-                              SEXP cvec) {
+model_dims check_model(SEXP y, SEXP Z, SEXP H, SEXP T, SEXP R, SEXP Q,
+                       SEXP a1, SEXP P1, SEXP P1inf, SEXP dvec, SEXP cvec) {
   model_dims d;
 
   check_matrix(y, "y");
@@ -94,14 +79,14 @@ static model_dims check_model(SEXP y, SEXP Z, SEXP H, SEXP T, SEXP R, SEXP Q,
   return d;
 }
 
-static bool any_nonzero(double *x, R_xlen_t len) {
+bool any_nonzero(double *x, R_xlen_t len) {
   for (R_xlen_t i = 0; i < len; i++) if (x[i] != 0.0) return true;
   return false;
 }
 
 // Observation intercept: the filter runs on y - d, so v = y - d - Z a.
 // Returns y itself if there is no intercept.
-static double *subtract_intercept(model_dims d, double *y, SEXP dvec) {
+double *subtract_intercept(model_dims d, double *y, SEXP dvec) {
   if (isNull(dvec)) return y;
 
   double *dv = REAL(dvec);
@@ -115,24 +100,8 @@ static double *subtract_intercept(model_dims d, double *y, SEXP dvec) {
   return yd;
 }
 
-// The univariate treatment needs diagonal H. Otherwise each H_t (restricted
-// to the observed elements of y_t) is factored as L_t L_t' and the model is
-// transformed to y* = L^-1 y, Z* = L^-1 Z, H* = I.
-typedef struct {
-  bool diagonal;
-  double *y;       // y*, or the original y if diagonal
-  double *Z;
-  double *H;
-  int dZ;
-  int dH;
-  double *L;       // L_t at L + t * dL, leading dimension n_obs[t]
-  int dL;
-  int *n_obs;      // number of observed elements of y_t
-  int *obs;        // their indices, at obs + t * p
-} transformed_model;
-
-static transformed_model transform_model(model_dims d, double *y, double *Z,
-                                         double *H) {
+transformed_model transform_model(model_dims d, double *y, double *Z,
+                                  double *H) {
   int n = d.n;
   int p = d.p;
   int m = d.m;
@@ -1136,3 +1105,4 @@ extern "C" SEXP kfas0_loglik(
 
   return ScalarReal(loglik - log_det_L(tm, d.n));
 }
+

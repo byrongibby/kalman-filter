@@ -24,6 +24,12 @@ using the univariate treatment of multivariate series (Durbin & Koopman,
 `kfas_loglik()` computes only the log-likelihood, without storing the
 filter's per-step output, for use inside optimisers.
 
+`precision_sampler()` draws the states from their joint posterior
+distribution with the precision-based sampler of Chan & Jeliazkov (2009),
+which factors the banded posterior precision of all the states at once
+instead of running the filter. It needs non-singular state disturbance and
+observation variances.
+
 `mvrnorm()` draws from a multivariate normal distribution.
 
 See `?kfas` for the model, argument shapes and outputs, and `TODO.md` for
@@ -59,3 +65,8 @@ The tests compare results against the KFAS package where it is installed.
 
 Durbin, J. and Koopman, S. J. (2012). *Time Series Analysis by State Space
 Methods*, 2nd edition. Oxford University Press.
+
+Chan, J. C. C. and Jeliazkov, I. (2009). Efficient simulation and
+integrated likelihood estimation in state space models. *International
+Journal of Mathematical Modelling and Numerical Optimisation*, 1(1/2),
+101-120.

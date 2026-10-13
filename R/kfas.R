@@ -405,3 +405,105 @@ mvrnorm <- function(n, mu, sigma) {
 
   return(t(z))
 }
+
+#' Precision-based sampler for the states
+#'
+#' Draws the states \eqn{\alpha_1, \dots, \alpha_n} jointly from their
+#' posterior distribution given the observations, using the precision-based
+#' sampler of Chan and Jeliazkov (2009). Instead of running the Kalman
+#' filter and a backward recursion, it writes the posterior of the stacked
+#' state vector \eqn{\alpha = (\alpha_1', \dots, \alpha_n')'}{alpha =
+#' (alpha[1]', ..., alpha[n]')'} as \eqn{N(\mu, K^{-1})}{N(mu, K^-1)}. The
+#' precision \eqn{K} is block tridiagonal, so it is factored as a band
+#' matrix in \eqn{O(n m^3)} operations, and each draw is then
+#' \eqn{\mu + L'^{-1} z}{mu + L'^-1 z}, with \eqn{K = L L'} and \eqn{z}
+#' standard normal, at the cost of a banded triangular solve.
+#'
+#' The model, arguments, time-varying system matrices, intercepts and
+#' missing observations are as described in [kfas()]. Non-diagonal
+#' \eqn{H} is allowed.
+#'
+#' @section Requirements:
+#' The posterior precision involves the inverses of the variances in the
+#' model, so the sampler needs
+#' * \eqn{R_t Q_t R_t'} positive definite for \eqn{t = 1, \dots, n - 1}:
+#'   every state has its own disturbance. Models with fewer disturbances
+#'   than states (\eqn{q < m}), such as those with a deterministic trend
+#'   slope, are not supported;
+#' * \eqn{H_t} positive definite (over the observed elements);
+#' * `initp` positive definite, apart from diffuse elements given by
+#'   `initpinf`. Diffuse elements have a flat prior, the limit of the
+#'   exact diffuse initialisation, so the draws come from the same
+#'   posterior that [kfas()] smooths with a diffuse initial state.
+#'
+#' For models outside these conditions use the Kalman filter based
+#' smoother in [kfas()] for the posterior mean and variances.
+#'
+#' Draws use a 64-bit Mersenne Twister seeded from R's random number
+#' generator, as in [mvrnorm()], so [set.seed()] makes them reproducible.
+#'
+#' @inheritParams kfas
+#' @param nsim Number of draws, a positive integer.
+#'
+#' @return A list with elements
+#' \describe{
+#'   \item{`draws`}{\eqn{n \times m \times}{n x m x} `nsim` array of draws:
+#'     `draws[, , s]` is one draw of the states, laid out like `alphahat`
+#'     in [kfas()].}
+#'   \item{`mean`}{\eqn{n \times m}{n x m} posterior mean
+#'     \eqn{E(\alpha_t | y)}, equal to `alphahat` from [kfas()].}
+#' }
+#'
+#' @references Chan, J. C. C. and Jeliazkov, I. (2009). Efficient
+#'   simulation and integrated likelihood estimation in state space models.
+#'   *International Journal of Mathematical Modelling and Numerical
+#'   Optimisation*, 1(1/2), 101--120.
+#'
+#' @examples
+#' # Draws of the level of the Nile, with a diffuse initial level
+#' y <- matrix(as.numeric(Nile))
+#' set.seed(1)
+#' sim <- precision_sampler(y, matrix(1), matrix(15099), matrix(1),
+#'                          matrix(1), matrix(1469.1), 0, matrix(0),
+#'                          matrix(1), nsim = 100)
+#' plot(as.numeric(Nile), ylab = "Flow")
+#' matlines(sim$draws[, 1, 1:10], col = "grey", lty = 1)
+#' lines(sim$mean[, 1])
+#'
+#' @export
+precision_sampler <- function(
+  obs,
+  obsmat,
+  obsvar,
+  statemat,
+  vartrans,
+  statevar,
+  inita,
+  initp,
+  initpinf = NULL,
+  obsint = NULL,
+  stateint = NULL,
+  nsim = 1
+) {
+  if (!is.matrix(obs)) stop("obs must be an n x p matrix", call. = FALSE)
+  if (is.null(initpinf)) initpinf <- diffuse_none(vartrans)
+
+  x <- .Call(
+    "precision_sampler",
+    t(as_double(obs)),
+    as_double(obsmat),
+    as_double(obsvar),
+    as_double(statemat),
+    as_double(vartrans),
+    as_double(statevar),
+    as_double(inita),
+    as_double(initp),
+    as_double(initpinf),
+    intercept(obsint),
+    intercept(stateint),
+    nsim
+  )
+
+  list(draws = aperm(x[[1]], c(2, 1, 3)), mean = t(x[[2]]))
+}
+
