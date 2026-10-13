@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 #include <Rinternals.h>
 #include <R_ext/BLAS.h>
@@ -46,8 +47,8 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
   pcg32_srandom_r(&rng, time(NULL), (intptr_t)&rng);
 
   // Vars required for BLAS/LAPACK routines
-  char *nt = "n";
-  char *lo = "l";
+  const char *nt = "n";
+  const char *lo = "l";
   int info;
   double pos = 1.0;
   
@@ -55,8 +56,8 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
   FC_LEN_T len_1 = 1; 
   FC_LEN_T len_2 = 1;
 
-  double *z = malloc(d * n * sizeof(double));
-  double *C = malloc(d * d * sizeof(double));
+  double *z = (double *) malloc(d * n * sizeof(double));
+  double *C = (double *) malloc(d * d * sizeof(double));
 
   rnorm(&rng, z, d * n);
 
@@ -83,7 +84,7 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
   return info;
 }
 
-SEXP mvrnorm(SEXP n, SEXP mu, SEXP sigma) {
+extern "C" SEXP mvrnorm(SEXP n, SEXP mu, SEXP sigma) {
   SEXP dim_sigma = PROTECT(getAttrib(sigma, R_DimSymbol));
   
   int len = INTEGER(n)[0];

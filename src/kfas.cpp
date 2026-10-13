@@ -28,20 +28,20 @@ static int filter(
     double *K
 ) {
   // Parameters required by BLAS/LAPACK
-  char *tr = "t";
-  char *nt = "n";
+  const char *tr = "t";
+  const char *nt = "n";
   int inc = 1;
   double pos = 1.0;
   double neg = -1.0;
   double zero = 0.0;
-  int *ipiv = malloc(p * sizeof(int));
+  int *ipiv = (int *) malloc(p * sizeof(int));
   int info = 0;
 
   // Temporary storage for intermediate results
-  double *ZP = malloc(p * m * sizeof(double));
-  double *FinvZP = malloc(p * m * sizeof(double));
-  double *RQ = malloc(m * q * sizeof(double));
-  double *TPtt = malloc(m * m * sizeof(double));
+  double *ZP = (double *) malloc(p * m * sizeof(double));
+  double *FinvZP = (double *) malloc(p * m * sizeof(double));
+  double *RQ = (double *) malloc(m * q * sizeof(double));
+  double *TPtt = (double *) malloc(m * m * sizeof(double));
 
   // String lengths for cstring args
   FC_LEN_T len_1 = 1; 
@@ -144,26 +144,26 @@ static int smooth(
     double *V
 ) {
   // Parameters required by BLAS/LAPACK
-  char *tr = "t";
-  char *nt = "n";
+  const char *tr = "t";
+  const char *nt = "n";
   int inc = 1;
   double pos = 1.0;
   double neg = -1.0;
   double zero = 0.0;
-  int *ipiv = malloc(p * sizeof(int));
+  int *ipiv = (int *) malloc(p * sizeof(int));
   int info = 0;
 
   // Temporary storage for intermediary results (filter)
-  double *ZP = malloc(p * m * sizeof(double));
-  double *FinvZ = malloc((p * m) * n * sizeof(double));
-  double *FinvZP = malloc(p * m * sizeof(double));
-  double *RQ = malloc(m * q * sizeof(double));
-  double *TPtt = malloc(m * m * sizeof(double));
+  double *ZP = (double *) malloc(p * m * sizeof(double));
+  double *FinvZ = (double *) malloc((p * m) * n * sizeof(double));
+  double *FinvZP = (double *) malloc(p * m * sizeof(double));
+  double *RQ = (double *) malloc(m * q * sizeof(double));
+  double *TPtt = (double *) malloc(m * m * sizeof(double));
 
   // Temporary storage for intermediary results (smoother)
-  double *L = malloc(m * m * sizeof(double));
-  double *LN = malloc(m * m * sizeof(double));
-  double *PN = malloc(m * m * sizeof(double));
+  double *L = (double *) malloc(m * m * sizeof(double));
+  double *LN = (double *) malloc(m * m * sizeof(double));
+  double *PN = (double *) malloc(m * m * sizeof(double));
 
   // String lengths for cstring args
   FC_LEN_T len_1 = 1; 
@@ -295,7 +295,7 @@ static int smooth(
   return 0;
 }
 
-SEXP kfas(
+extern "C" SEXP kfas(
     SEXP y,
     SEXP Z,
     SEXP H,

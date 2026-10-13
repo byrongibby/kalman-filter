@@ -2,6 +2,7 @@
 // Byron Botha 2025
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <Rinternals.h>
@@ -39,8 +40,8 @@ static int kfas0_c(
     bool disturbances
 ) {
   // Scalars required for BLAS/LAPACK routines
-  char *tr = "t";
-  char *nt = "n";
+  const char *tr = "t";
+  const char *nt = "n";
   int inc = 1;
   double pos = 1.0;
   double neg = -1.0;
@@ -251,7 +252,7 @@ static int kfas0_c(
   return 0;
 }
 
-SEXP kfas0(
+extern "C" SEXP kfas0(
     SEXP y,
     SEXP Z,
     SEXP H,
