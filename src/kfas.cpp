@@ -34,14 +34,14 @@ static int filter(
   double pos = 1.0;
   double neg = -1.0;
   double zero = 0.0;
-  int *ipiv = (int *) malloc(p * sizeof(int));
+  int *ipiv = (int *) R_alloc(p, sizeof(int));
   int info = 0;
 
   // Temporary storage for intermediate results
-  double *ZP = (double *) malloc(p * m * sizeof(double));
-  double *FinvZP = (double *) malloc(p * m * sizeof(double));
-  double *RQ = (double *) malloc(m * q * sizeof(double));
-  double *TPtt = (double *) malloc(m * m * sizeof(double));
+  double *ZP = (double *) R_alloc(p * m, sizeof(double));
+  double *FinvZP = (double *) R_alloc(p * m, sizeof(double));
+  double *RQ = (double *) R_alloc(m * q, sizeof(double));
+  double *TPtt = (double *) R_alloc(m * m, sizeof(double));
 
   // String lengths for cstring args
   FC_LEN_T len_1 = 1; 
@@ -111,12 +111,6 @@ static int filter(
       &pos, P + ((t + 1) * m) * m, &m, len_1, len_2);
   }
 
-  free(ipiv);
-  free(ZP);
-  free(FinvZP);
-  free(RQ);
-  free(TPtt);
-
   return 0;
 }
 
@@ -150,20 +144,20 @@ static int smooth(
   double pos = 1.0;
   double neg = -1.0;
   double zero = 0.0;
-  int *ipiv = (int *) malloc(p * sizeof(int));
+  int *ipiv = (int *) R_alloc(p, sizeof(int));
   int info = 0;
 
   // Temporary storage for intermediary results (filter)
-  double *ZP = (double *) malloc(p * m * sizeof(double));
-  double *FinvZ = (double *) malloc((p * m) * n * sizeof(double));
-  double *FinvZP = (double *) malloc(p * m * sizeof(double));
-  double *RQ = (double *) malloc(m * q * sizeof(double));
-  double *TPtt = (double *) malloc(m * m * sizeof(double));
+  double *ZP = (double *) R_alloc(p * m, sizeof(double));
+  double *FinvZ = (double *) R_alloc((p * m) * n, sizeof(double));
+  double *FinvZP = (double *) R_alloc(p * m, sizeof(double));
+  double *RQ = (double *) R_alloc(m * q, sizeof(double));
+  double *TPtt = (double *) R_alloc(m * m, sizeof(double));
 
   // Temporary storage for intermediary results (smoother)
-  double *L = (double *) malloc(m * m * sizeof(double));
-  double *LN = (double *) malloc(m * m * sizeof(double));
-  double *PN = (double *) malloc(m * m * sizeof(double));
+  double *L = (double *) R_alloc(m * m, sizeof(double));
+  double *LN = (double *) R_alloc(m * m, sizeof(double));
+  double *PN = (double *) R_alloc(m * m, sizeof(double));
 
   // String lengths for cstring args
   FC_LEN_T len_1 = 1; 
@@ -281,16 +275,6 @@ static int smooth(
       &neg, PN, &m, P + (t * m) * m, &m,
       &pos, V + (t * m) * m, &m, len_1, len_2);
   }
-
-  free(ipiv);
-  free(ZP);
-  free(FinvZ);
-  free(FinvZP);
-  free(RQ);
-  free(TPtt);
-  free(L);
-  free(LN);
-  free(PN);
 
   return 0;
 }

@@ -50,8 +50,8 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
   FC_LEN_T len_1 = 1; 
   FC_LEN_T len_2 = 1;
 
-  double *z = (double *) malloc(d * n * sizeof(double));
-  double *C = (double *) malloc(d * d * sizeof(double));
+  double *z = (double *) R_alloc(d * n, sizeof(double));
+  double *C = (double *) R_alloc(d * d, sizeof(double));
 
   rnorm(&rng, z, d * n);
 
@@ -71,9 +71,6 @@ int mvrnorm_c(double *x, int n, int d, double *mu, double *sigma) {
     nt, nt, &d, &n, &d,
     &pos, C, &d, z, &d,
     &pos, x, &d, len_1, len_2);
-
-  free(z);
-  free(C);
 
   return info;
 }
