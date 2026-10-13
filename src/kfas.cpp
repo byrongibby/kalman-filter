@@ -251,7 +251,7 @@ static int smooth(
       &zero, r + (t * m), &inc, len_1);
     F77_CALL(dgemv)(
       tr, &p, &m,
-      &pos, FinvZ + (t * p) * m, &p, v + (t * m), &inc,
+      &pos, FinvZ + (t * p) * m, &p, v + (t * p), &inc,
       &pos, r + (t * m), &inc, len_1);
     F77_CALL(dgemm)(
       tr, nt, &m, &m, &p,

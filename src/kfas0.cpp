@@ -101,7 +101,7 @@ static int kfas0_c(
         // Update state (6.12)
         F77_CALL(dgemv)(
           nt, &m, &inc,
-          &pos, K + (t * m * p) + (i * m), &p, v + (t * p) + i, &inc,
+          &pos, K + (t * m * p) + (i * m), &m, v + (t * p) + i, &inc,
           &pos, att + (t * m), &inc, len_1);
         c = neg * F[(t * p) + i];
         F77_CALL(dger)(
@@ -169,7 +169,7 @@ static int kfas0_c(
         F77_CALL(dgemv)(
           nt, &q, &m,
           &pos, qm_1, &q, r + ((t + 1) * m), &inc,
-          &pos, etahat + (t * q), &inc, len_1);
+          &zero, etahat + (t * q), &inc, len_1);
         F77_CALL(dgemm)(
           nt, nt, &q, &m, &m,
           &pos, qm_1, &q, N + ((t + 1) * m * m), &m,
